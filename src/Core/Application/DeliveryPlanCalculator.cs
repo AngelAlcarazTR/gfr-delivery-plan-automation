@@ -6,7 +6,8 @@ public static class DeliveryPlanCalculator
     {
         var startDev = sprint.StartDate;
         var endDev = BusinessDayCalculator.AddBusinessDays(startDev, config.DevelopmentDays - 1);
-        var qed = BusinessDayCalculator.AddBusinessDays(endDev, config.QedGapDays);
+        var qaCutoff = BusinessDayCalculator.AddBusinessDays(endDev, config.QaCutoffGapDays);
+        var qed = BusinessDayCalculator.AddBusinessDays(qaCutoff, config.QedGapDays);
         var startReg = BusinessDayCalculator.AddBusinessDays(qed, config.RegressionGapDays);
         var endReg = BusinessDayCalculator.AddBusinessDays(startReg, config.RegressionDays - 1);
         var release = FirstBusinessMondayAfter(endReg);
@@ -15,6 +16,7 @@ public static class DeliveryPlanCalculator
         {
             new(Milestone.StartDev,  startDev,  false, null),
             new(Milestone.EndDev,    endDev,    false, null),
+            new(Milestone.QaCutoff,  qaCutoff,  false, null),
             new(Milestone.QedDeploy, qed,       false, null),
             new(Milestone.StartReg,  startReg,  false, null),
             new(Milestone.EndReg,    endReg,    false, null),
