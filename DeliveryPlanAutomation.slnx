@@ -1,8 +1,12 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Adapters/Adapters.csproj" Id="226e99ab-7c0e-4129-9ace-b14a74057d39" />
     <Project Path="src/Core/Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Core.Tests/Core.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="SmokeTest/SmokeTest.csproj" Id="a8410178-5deb-411e-be1e-8d3867f6b8f4" />
   </Folder>
 </Solution>
