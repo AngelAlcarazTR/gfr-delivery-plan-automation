@@ -427,3 +427,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# generated files by the SmokeTest(output, no source code)
+delivery-plan-email.html
+ring-test.png

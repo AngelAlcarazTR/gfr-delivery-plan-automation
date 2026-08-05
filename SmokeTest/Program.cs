@@ -1,7 +1,4 @@
-﻿using Core.Application;
-using Core.Domain;
-
-// 1) Read the current sprint from ADO
+﻿// 1) Read the current sprint from ADO
 var config = new AdoConfig(
     Organization: "tr-tax",
     Project: "TaxProf",
@@ -33,7 +30,8 @@ foreach (var e in plan.Events)
 
 // 4) Renderizar el correo HTML
 var renderer = new HtmlEmailRenderer();
-var html = renderer.Render(plan);
+var today = LocalDate.FromDateTime(DateTime.Today);
+var html = renderer.Render(plan, today);
 
 // Guardar a un archivo para abrirlo
 var outputPath = "delivery-plan-email.html";
@@ -43,17 +41,29 @@ Console.WriteLine();
 Console.WriteLine($"Correo generado: {Path.GetFullPath(outputPath)}");
 
 // 5) Crear el borrador en Outlook vía Graph
-var graphConfig = new GraphConfig(
-    TenantId: "62ccb864-6a1a-4b5d-8e1c-397dec1a8258",
-    ClientId: "ad58cf49-76b5-4051-b5d3-3ba6a7462bc0");
+//try
+//{
+//    var graphConfig = new GraphConfig(
+//        TenantId: "62ccb864-6a1a-4b5d-8e1c-397dec1a8258",
+//        ClientId: "ad58cf49-76b5-4051-b5d3-3ba6a7462bc0");
 
-var draftCreator = new GraphDraftCreator(graphConfig);
+//    var draftCreator = new GraphDraftCreator(graphConfig);
 
-Console.WriteLine();
-Console.WriteLine("Creando borrador... (se abrirá el navegador para login)");
+//    Console.WriteLine();
+//    Console.WriteLine("Creando borrador... (se abrirá el navegador para login)");
 
-await draftCreator.CreateDraftAsync(
-    subject: "[TEST Graph] Delivery Plan - August release",
-    htmlBody: html);
+//    await draftCreator.CreateDraftAsync(
+//        subject: "[TEST Graph] Delivery Plan - August release",
+//        htmlBody: html);
 
-Console.WriteLine("✅ Borrador creado. Revisa tu carpeta Drafts en Outlook.");
+//    Console.WriteLine("✅ Borrador creado. Revisa tu carpeta Drafts en Outlook.");
+//}
+//catch (Exception)
+//{
+//    Console.WriteLine("$\"⚠️  Graph aún bloqueado: {ex.Message}\"");
+//}
+
+// 6) create a ring image for the next milestone
+var ringBytes = RingImageGenerator.CreateRingPng(34);
+File.WriteAllBytes("ring-test.png", ringBytes);
+Console.WriteLine($"Anillo generado: {Path.GetFullPath("ring-test.png")}");

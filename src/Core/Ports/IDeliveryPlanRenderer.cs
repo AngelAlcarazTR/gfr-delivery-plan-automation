@@ -2,5 +2,5 @@
 
 public interface IDeliveryPlanRenderer
 {
-    string Render(DeliveryPlan plan);
+    string Render(DeliveryPlan plan, LocalDate today);
 }
