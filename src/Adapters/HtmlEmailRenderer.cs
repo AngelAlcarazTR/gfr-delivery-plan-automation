@@ -19,17 +19,23 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
 
         var sb = new StringBuilder();
         sb.Append("""
-        <!DOCTYPE html>
-        <html lang="en"><head><meta charset="UTF-8"></head>
-        <body style="margin:0;background:#cfd4d8;padding:24px 12px;font-family:'Segoe UI',Arial,sans-serif;">
-        <table role="presentation" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;width:100%;background:#ffffff;">
+            <!DOCTYPE html>
+            <html lang="en"><head>
+            <meta charset="UTF-8">
+            <meta name="color-scheme" content="light dark">
+            <meta name="supported-color-schemes" content="light dark">
+            </head>
+            <body style="margin:0;padding:0;font-family:'Segoe UI',Arial,sans-serif;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="width:100%;">
+            <tr><td align="center" style="padding:24px 12px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" bgcolor="#eef1f4" style="max-width:600px;width:100%;background:#eef1f4;">
         """);
 
         sb.Append(RenderHeader(plan, d, today));
         sb.Append(RenderPhaseGrid(d));
         sb.Append(RenderFooter());
 
-        sb.Append("</table></body></html>");
+        sb.Append("</table></td></tr></table></body></html>");
         return sb.ToString();
     }
 
@@ -40,43 +46,45 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
         var releaseMonth = LongMonths[release.Month - 1];
         var daysToRelease = Period.Between(today, release, PeriodUnits.Days).Days;
 
-        // % of time elapsed from startDev to release
         var totalDays = Period.Between(startDev, release, PeriodUnits.Days).Days;
         var elapsed = Period.Between(startDev, today, PeriodUnits.Days).Days;
         var percent = totalDays <= 0 ? 0 : Math.Clamp((int)Math.Round(100.0 * elapsed / totalDays), 0, 100);
 
-        // Ring -> PNG -> base64 embedded
         var ringB64 = Convert.ToBase64String(RingImageGenerator.CreateRingPng(percent));
 
         var next = NextDelivery(plan, today);
         var nextHtml = next is null ? "" : $"""
           <div style="padding-top:10px;">
-            <span style="font-size:11px;color:#6fa891;text-transform:uppercase;letter-spacing:.06em;">Next milestone</span><br>
-            <span style="font-size:14px;font-weight:bold;color:#ffffff;">{next.Value.Label}</span>
-            <span style="font-size:12px;color:#c9e0d6;"> &middot; {ShortDay(next.Value.Date)} {ShortDate(next.Value.Date)}</span>
+            <span style="font-size:11px;color:#6b7772;text-transform:uppercase;letter-spacing:.06em;">Next milestone</span><br>
+            <span style="font-size:14px;font-weight:bold;color:#1f2421;">{next.Value.Label}</span>
+            <span style="font-size:12px;color:#5f6b64;"> &middot; {ShortDay(next.Value.Date)} {ShortDate(next.Value.Date)}</span>
           </div>
           """;
 
         var daysHtml = daysToRelease >= 0
-            ? $"""<span style="font-size:28px;font-weight:bold;color:#FA4616;">{daysToRelease}</span><span style="font-size:13px;color:#c9e0d6;"> days to release &middot; {ShortDate(release)}</span>"""
-            : $"""<span style="font-size:16px;font-weight:bold;color:#FA4616;">Released</span><span style="font-size:13px;color:#c9e0d6;"> &middot; {ShortDate(release)}</span>""";
+            ? $"""<span style="font-size:28px;font-weight:bold;color:#FA4616;">{daysToRelease}</span><span style="font-size:13px;color:#5f6b64;"> days to release &middot; {ShortDate(release)}</span>"""
+            : $"""<span style="font-size:16px;font-weight:bold;color:#FA4616;">Released</span><span style="font-size:13px;color:#5f6b64;"> &middot; {ShortDate(release)}</span>""";
 
         return $"""
-        <tr><td style="background:#0A3D2E;padding:24px 30px;">
+        <tr><td style="background:#ffffff;border:1px solid #d3d8dd;border-bottom:none;padding:22px 30px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr>
               <td style="vertical-align:top;">
-                <div style="font-size:11px;color:#6fa891;letter-spacing:.14em;text-transform:uppercase;">Delivery Plan &middot; GFR</div>
-                <div style="font-size:22px;font-weight:bold;color:#ffffff;padding-top:5px;">{releaseMonth} release</div>
+                <div style="font-size:11px;color:#0F6E56;letter-spacing:.14em;text-transform:uppercase;font-weight:bold;">Delivery Plan &middot; GFR</div>
+                <div style="font-size:22px;font-weight:bold;color:#1f2421;padding-top:5px;">{releaseMonth} release</div>
                 <div style="padding-top:8px;">{daysHtml}</div>
                 {nextHtml}
               </td>
               <td style="vertical-align:top;width:122px;text-align:right;">
-                <img src="data:image/png;base64,{ringB64}" width="110" height="110" alt="{percent}% of the release timeline elapsed" style="display:block;border:0;">
+                <img src="data:image/png;base64,{ringB64}" width="110" height="110" alt="{percent}% of the release timeline elapsed" style="display:block;border:0;margin-left:auto;">
+                <div style="font-size:10px;font-weight:bold;color:#5f6b64;letter-spacing:.08em;text-transform:uppercase;text-align:center;width:110px;margin-left:auto;padding-top:5px;">Time elapsed</div>
               </td>
             </tr>
           </table>
         </td></tr>
+        <tr><td height="1" style="height:1px;font-size:0;line-height:0;background:#d3d8dd;">&nbsp;</td></tr>
+        <tr><td height="1" style="height:1px;font-size:0;line-height:0;background:#e1e5e9;">&nbsp;</td></tr>
+        <tr><td height="2" style="height:2px;font-size:0;line-height:0;background:#eef1f4;">&nbsp;</td></tr>
         """;
     }
 
@@ -95,12 +103,12 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
 
         // a box for a milestone, with a label and a date
         string Box(string title, string titleColor, string barColor, string borderColor, string rows, int height) => $"""
-        <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;height:{height}px;border:1px solid {borderColor};">
-          <tr><td style="border-left:4px solid {barColor};padding:11px 14px;vertical-align:top;">
-            <div style="font-size:11px;font-weight:bold;color:{titleColor};letter-spacing:.05em;">{title}</div>
-            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin-top:5px;">{rows}</table>
-          </td></tr>
-        </table>
+            <table role="presentation" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:100%;height:{height}px;background:#ffffff;border:1px solid {borderColor};">
+              <tr><td style="border-left:4px solid {barColor};padding:11px 14px;vertical-align:top;">
+                <div style="font-size:11px;font-weight:bold;color:{titleColor};letter-spacing:.05em;">{title}</div>
+                <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin-top:5px;">{rows}</table>
+              </td></tr>
+            </table>
         """;
 
         var dev = Box("DEVELOPMENT", "#0C447C", "#378ADD", "#e3eefa",
@@ -116,7 +124,7 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
             Row("AMER/UK", F(Milestone.Release)), 70);
 
         return $"""
-        <tr><td style="padding:22px 24px 6px;">
+        <tr><td style="padding:22px 30px 6px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr>
               <td style="width:50%;padding:0 6px 12px 0;vertical-align:top;">{dev}</td>
@@ -136,23 +144,23 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
         return """
         <tr><td style="padding:16px 30px 6px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
-            <tr><td style="background:#FA4616;text-align:center;">
-              <a href="https://dashboard-delivery-plan.example" style="display:block;padding:15px 20px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;">Open the release dashboard &rarr;</a>
+            <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #FA4616;border-radius:4px;mso-padding-alt:0;">
+              <a href="https://dashboard-delivery-plan.example" style="display:block;line-height:46px;font-size:15px;font-weight:bold;color:#FA4616;text-decoration:none;">Open the release dashboard &rarr;</a>
             </td></tr>
           </table>
         </td></tr>
         <tr><td style="padding:10px 30px 4px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
-            <tr><td style="background:#185FA5;text-align:center;">
-              <a href="https://dev.azure.com/tr-tax" style="display:block;padding:15px 20px;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;">View ticket status &rarr;</a>
+            <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #185FA5;border-radius:4px;mso-padding-alt:0;">
+              <a href="https://dev.azure.com/tr-tax" style="display:block;line-height:46px;font-size:14px;font-weight:bold;color:#185FA5;text-decoration:none;">View ticket status &rarr;</a>
             </td></tr>
           </table>
         </td></tr>
         <tr><td style="padding:22px 30px 26px;">
           <div style="border-top:1px solid #eceef0;padding-top:14px;font-size:13px;color:#1f2421;">Thanks,<br><b>Mariana Moser</b></div>
-          <div style="font-size:11px;color:#9aa0a6;padding-top:2px;">Thomson Reuters &middot; Scrum Master &middot; GoFileRoom</div>
+          <div style="font-size:11px;color:#5f6b64;padding-top:2px;">Thomson Reuters &middot; Scrum Master &middot; GoFileRoom</div>
         </td></tr>
-        """;
+    """;
     }
 
     private static (string Label, LocalDate Date)? NextDelivery(DeliveryPlan plan, LocalDate today)
