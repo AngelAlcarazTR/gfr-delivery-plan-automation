@@ -7,14 +7,8 @@ public class AdoSprintReader(HttpClient http, AdoConfig config) : ISprintReader
 
     public async Task<Sprint> GetCurrentSprintAsync(CancellationToken ct = default)
     {
-        var url = $"https://dev.azure.com/{_config.Organization}/{_config.Project}/" +
-                  $"{_config.Team}/_apis/work/teamsettings/iterations" +
-                  $"?$timeframe=current&api-version=7.1";
-
-        var b64 = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{_config.Pat}"));
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", b64);
+        using var request = new HttpRequestMessage(HttpMethod.Get, _config.CurrentIterationsUrl());
+        request.Headers.Authorization = _config.AuthHeader();
 
         using var response = await _http.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();

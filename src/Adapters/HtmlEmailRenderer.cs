@@ -2,6 +2,11 @@
 
 public class HtmlEmailRenderer : IDeliveryPlanRenderer
 {
+    private readonly EmailBranding _branding;
+
+    public HtmlEmailRenderer(EmailBranding? branding = null) =>
+        _branding = branding ?? EmailBranding.Default;
+
     private static readonly string[] ShortMonths =
         ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     private static readonly string[] LongMonths =
@@ -15,7 +20,6 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
     public string Render(DeliveryPlan plan, LocalDate today)
     {
         var d = plan.Events.ToDictionary(e => e.Label, e => e.Date);
-        var daysToRelease = Period.Between(today, d[Milestone.Release], PeriodUnits.Days).Days;
 
         var sb = new StringBuilder();
         sb.Append("""
@@ -41,12 +45,20 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
 
     private static string RenderHeader(DeliveryPlan plan, Dictionary<Milestone, LocalDate> d, LocalDate today)
     {
-        var release = d[Milestone.Release];
-        var startDev = d[Milestone.StartDev];
-        var releaseMonth = LongMonths[release.Month - 1];
-        var daysToRelease = Period.Between(today, release, PeriodUnits.Days).Days;
+        // QED-only plans (Jan/Feb/Mar/Sep) have no PROD phase, so the "goal" is the
+        // Release date when present, otherwise the QED deployment.
+        var hasRelease = d.ContainsKey(Milestone.Release);
+        var goal = hasRelease ? d[Milestone.Release]
+                 : d.TryGetValue(Milestone.QedDeploy, out var qed) ? qed
+                 : plan.Events[^1].Date;
+        var startDev = d.TryGetValue(Milestone.StartDev, out var sd) ? sd : plan.Events[0].Date;
+        var goalMonth = LongMonths[goal.Month - 1];
+        var daysToGoal = Period.Between(today, goal, PeriodUnits.Days).Days;
 
-        var totalDays = Period.Between(startDev, release, PeriodUnits.Days).Days;
+        var goalNoun = hasRelease ? "release" : "QED deploy";
+        var titleText = hasRelease ? $"{goalMonth} release" : $"{goalMonth} QED deployment";
+
+        var totalDays = Period.Between(startDev, goal, PeriodUnits.Days).Days;
         var elapsed = Period.Between(startDev, today, PeriodUnits.Days).Days;
         var percent = totalDays <= 0 ? 0 : Math.Clamp((int)Math.Round(100.0 * elapsed / totalDays), 0, 100);
 
@@ -61,9 +73,9 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
           </div>
           """;
 
-        var daysHtml = daysToRelease >= 0
-            ? $"""<span style="font-size:28px;font-weight:bold;color:#FA4616;">{daysToRelease}</span><span style="font-size:13px;color:#5f6b64;"> days to release &middot; {ShortDate(release)}</span>"""
-            : $"""<span style="font-size:16px;font-weight:bold;color:#FA4616;">Released</span><span style="font-size:13px;color:#5f6b64;"> &middot; {ShortDate(release)}</span>""";
+        var daysHtml = daysToGoal >= 0
+            ? $"""<span style="font-size:28px;font-weight:bold;color:#FA4616;">{daysToGoal}</span><span style="font-size:13px;color:#5f6b64;"> days to {goalNoun} &middot; {ShortDate(goal)}</span>"""
+            : $"""<span style="font-size:16px;font-weight:bold;color:#FA4616;">{(hasRelease ? "Released" : "Deployed")}</span><span style="font-size:13px;color:#5f6b64;"> &middot; {ShortDate(goal)}</span>""";
 
         return $"""
         <tr><td style="background:#ffffff;border:1px solid #d3d8dd;border-bottom:none;padding:22px 30px;">
@@ -71,7 +83,7 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
             <tr>
               <td style="vertical-align:top;">
                 <div style="font-size:11px;color:#0F6E56;letter-spacing:.14em;text-transform:uppercase;font-weight:bold;">Delivery Plan &middot; GFR</div>
-                <div style="font-size:22px;font-weight:bold;color:#1f2421;padding-top:5px;">{releaseMonth} release</div>
+                <div style="font-size:22px;font-weight:bold;color:#1f2421;padding-top:5px;">{titleText}</div>
                 <div style="padding-top:8px;">{daysHtml}</div>
                 {nextHtml}
               </td>
@@ -111,17 +123,33 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
             </table>
         """;
 
+        // Each row is only shown when its marker exists, so QED-only plans render
+        // without empty Regression/Release rows.
+        string RowIf(Milestone m, string label) => d.ContainsKey(m) ? Row(label, F(m)) : "";
+
         var dev = Box("DEVELOPMENT", "#0C447C", "#378ADD", "#e3eefa",
-            Row("Start", F(Milestone.StartDev)) + Row("End", F(Milestone.EndDev)), 118);
+            RowIf(Milestone.StartDev, "Start") + RowIf(Milestone.EndDev, "End"), 118);
 
         var qa = Box("QA", "#854F0B", "#EF9F27", "#f7ecd7",
-            Row("Cut-off", F(Milestone.QaCutoff)) + Row("Regression Start", F(Milestone.StartReg)) + Row("Regression End", F(Milestone.EndReg)), 118);
+            RowIf(Milestone.QaCutoff, "Cut-off") + RowIf(Milestone.StartReg, "Regression Start") + RowIf(Milestone.EndReg, "Regression End"), 118);
 
         var dep = Box("DEPLOYMENT", "#3C3489", "#7F77DD", "#ece9fb",
-            Row("QED", F(Milestone.QedDeploy)), 70);
+            RowIf(Milestone.QedDeploy, "QED"), 70);
 
-        var rel = Box("RELEASE", "#0F6E56", "#1D9E75", "#d7efe6",
-            Row("AMER/UK", F(Milestone.Release)), 70);
+        // The RELEASE box is only rendered for plans that ship to PROD (7 markers).
+        // QED-only plans (Jan/Feb/Mar/Sep) end at deployment, so DEPLOYMENT spans the row.
+        var bottomRow = d.ContainsKey(Milestone.Release)
+            ? $"""
+            <tr>
+              <td style="width:50%;padding:0 6px 0 0;vertical-align:top;">{dep}</td>
+              <td style="width:50%;padding:0 0 0 6px;vertical-align:top;">{Box("RELEASE", "#0F6E56", "#1D9E75", "#d7efe6", Row("AMER/UK", F(Milestone.Release)), 70)}</td>
+            </tr>
+            """
+            : $"""
+            <tr>
+              <td style="padding:0;vertical-align:top;">{dep}</td>
+            </tr>
+            """;
 
         return $"""
         <tr><td style="padding:22px 30px 6px;">
@@ -130,35 +158,32 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
               <td style="width:50%;padding:0 6px 12px 0;vertical-align:top;">{dev}</td>
               <td style="width:50%;padding:0 0 12px 6px;vertical-align:top;">{qa}</td>
             </tr>
-            <tr>
-              <td style="width:50%;padding:0 6px 0 0;vertical-align:top;">{dep}</td>
-              <td style="width:50%;padding:0 0 0 6px;vertical-align:top;">{rel}</td>
-            </tr>
+            {bottomRow}
           </table>
         </td></tr>
         """;
     }
 
-    private static string RenderFooter()
+    private string RenderFooter()
     {
-        return """
+        return $"""
         <tr><td style="padding:16px 30px 6px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #FA4616;border-radius:4px;mso-padding-alt:0;">
-              <a href="https://dashboard-delivery-plan.example" style="display:block;line-height:46px;font-size:15px;font-weight:bold;color:#FA4616;text-decoration:none;">Open the release dashboard &rarr;</a>
+              <a href="{_branding.DashboardUrl}" style="display:block;line-height:46px;font-size:15px;font-weight:bold;color:#FA4616;text-decoration:none;">Open the release dashboard &rarr;</a>
             </td></tr>
           </table>
         </td></tr>
         <tr><td style="padding:10px 30px 4px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #185FA5;border-radius:4px;mso-padding-alt:0;">
-              <a href="https://dev.azure.com/tr-tax" style="display:block;line-height:46px;font-size:14px;font-weight:bold;color:#185FA5;text-decoration:none;">View ticket status &rarr;</a>
+              <a href="{_branding.TicketStatusUrl}" style="display:block;line-height:46px;font-size:14px;font-weight:bold;color:#185FA5;text-decoration:none;">View ticket status &rarr;</a>
             </td></tr>
           </table>
         </td></tr>
         <tr><td style="padding:22px 30px 26px;">
-          <div style="border-top:1px solid #eceef0;padding-top:14px;font-size:13px;color:#1f2421;">Thanks,<br><b>Mariana Moser</b></div>
-          <div style="font-size:11px;color:#5f6b64;padding-top:2px;">Thomson Reuters &middot; Scrum Master &middot; GoFileRoom</div>
+          <div style="border-top:1px solid #eceef0;padding-top:14px;font-size:13px;color:#1f2421;">Thanks,<br><b>{_branding.SenderName}</b></div>
+          <div style="font-size:11px;color:#5f6b64;padding-top:2px;">{_branding.SenderTitle}</div>
         </td></tr>
     """;
     }
