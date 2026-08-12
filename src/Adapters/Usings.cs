@@ -1,0 +1,11 @@
+﻿global using Core.Domain;
+global using NodaTime;
+global using NodaTime.Text;
+global using System.Text.Json;
+global using Core.Ports;
+global using System.Net.Http.Headers;
+global using System.Text;
+global using Azure.Identity;
+global using Microsoft.Graph;
+global using Microsoft.Graph.Models;
+global using SkiaSharp;
