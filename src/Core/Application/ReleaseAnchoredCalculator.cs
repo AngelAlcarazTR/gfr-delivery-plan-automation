@@ -44,8 +44,7 @@ public static class ReleaseAnchoredCalculator
             new(Milestone.StartDev, startDev, startDevAdjusted, startDevAdjusted ? nominalStartDev : null),
             new(Milestone.EndDev, endDev, false, null),
             new(Milestone.QaCutoff, qaCutoff, false, null),
-            new(Milestone.QedDeploy, qed, false, null),
-            new(Milestone.StartReg, startReg, false, null),
+            new(Milestone.QedDeploy, qed, false, null)
         };
 
         if (schedule.Kind == PlanKind.Prod)
@@ -53,6 +52,8 @@ public static class ReleaseAnchoredCalculator
             var release = schedule.Release
                 ?? throw new ArgumentException("Release date is required for Prod plans.", nameof(schedule));
             var endReg = BusinessDayCalculator.AddBusinessDays(release, EndRegOffset);
+
+            events.Add(new PlanEvent(Milestone.StartReg, startReg, false, null));
             events.Add(new PlanEvent(Milestone.EndReg, endReg, false, null));
             events.Add(new PlanEvent(Milestone.Release, release, false, null));
         }

@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Adapters/Adapters.csproj" Id="226e99ab-7c0e-4129-9ace-b14a74057d39" />
     <Project Path="src/Core/Core.csproj" />
+    <Project Path="src/Functions/Functions.csproj" Id="847c5632-e5e3-439f-94a9-3c82f5ec79a9" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Core.Tests/Core.Tests.csproj" />
