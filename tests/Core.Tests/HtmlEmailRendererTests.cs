@@ -38,7 +38,8 @@ public class HtmlEmailRendererTests
         Assert.Contains("RELEASE", html);
         Assert.Contains("AMER/UK", html);
         Assert.Contains("days to release", html);
-        Assert.Contains("August release", html);
+        // Title now carries the year: "August 2026 release".
+        Assert.Contains("August 2026 release", html);
     }
 
     [Fact]
