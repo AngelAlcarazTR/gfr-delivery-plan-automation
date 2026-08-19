@@ -14,7 +14,7 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
     private static readonly string[] ShortDays =
         ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-    private static string ShortDate(LocalDate date) => $"{date.Day} {ShortMonths[date.Month - 1]}";
+    private static string ShortDate(LocalDate date) => $"{date.Day:D2} {ShortMonths[date.Month - 1]} {date.Year}";
     private static string ShortDay(LocalDate date) => ShortDays[(int)date.DayOfWeek - 1];
 
     public string Render(DeliveryPlan plan, LocalDate today)
@@ -56,7 +56,7 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
         var daysToGoal = Period.Between(today, goal, PeriodUnits.Days).Days;
 
         var goalNoun = hasRelease ? "release" : "QED deploy";
-        var titleText = hasRelease ? $"{goalMonth} release" : $"{goalMonth} QED deployment";
+        var titleText = hasRelease ? $"{goalMonth} {goal.Year} release" : $"{goalMonth} {goal.Year} QED deployment";
 
         var totalDays = Period.Between(startDev, goal, PeriodUnits.Days).Days;
         var elapsed = Period.Between(startDev, today, PeriodUnits.Days).Days;

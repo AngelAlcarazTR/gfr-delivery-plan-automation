@@ -19,12 +19,12 @@ public class ReleaseAnchoredCalculatorTests
         new Dictionary<Milestone, int>
         {
             [Milestone.QedDeploy] = 0,
-            [Milestone.StartReg]  = 0,
-            [Milestone.Release]   = 0,
-            [Milestone.EndReg]    = 1,
-            [Milestone.QaCutoff]  = 2,
-            [Milestone.EndDev]    = 2,
-            [Milestone.StartDev]  = 5,
+            [Milestone.StartReg] = 0,
+            [Milestone.Release] = 0,
+            [Milestone.EndReg] = 1,
+            [Milestone.QaCutoff] = 2,
+            [Milestone.EndDev] = 2,
+            [Milestone.StartDev] = 5,
         };
 
     private static readonly HolidayCalendar Holidays =
@@ -88,8 +88,6 @@ public class ReleaseAnchoredCalculatorTests
             [Milestone.EndDev] = new LocalDate(2025, 9, 9),
             [Milestone.QaCutoff] = new LocalDate(2025, 9, 12),
             [Milestone.QedDeploy] = new LocalDate(2025, 9, 15),
-            [Milestone.StartReg] = new LocalDate(2025, 9, 15),
-            [Milestone.EndReg] = new LocalDate(2025, 9, 24),
             }),
         new(
             "[GFR][2024][Delivery Plan] - December 16th PROD Release",
@@ -231,8 +229,6 @@ public class ReleaseAnchoredCalculatorTests
             [Milestone.EndDev] = new LocalDate(2024, 9, 19),
             [Milestone.QaCutoff] = new LocalDate(2024, 9, 20),
             [Milestone.QedDeploy] = new LocalDate(2024, 9, 23),
-            [Milestone.StartReg] = new LocalDate(2024, 9, 23),
-            [Milestone.EndReg] = new LocalDate(2024, 9, 27),
             }),
         new(
             "[GFR][2026][Delivery Plan] - July 27th Release",
@@ -452,6 +448,9 @@ public class ReleaseAnchoredCalculatorTests
 
         var totalExact = exact.Values.Sum();
         var totalPresent = present.Values.Sum();
-        Assert.True(totalExact >= 128, $"Total exact {totalExact}/{totalPresent}");
+        // Floor lowered 128 -> 126: two QED-only fixtures (Sep 2024/2025) used to carry a
+        // phantom StartReg (= QED) that matched the pre-fix engine; QED-only plans have
+        // no regression phase in real ADO, so those two fake exact-matches are gone.
+        Assert.True(totalExact >= 126, $"Total exact {totalExact}/{totalPresent}");
     }
 }

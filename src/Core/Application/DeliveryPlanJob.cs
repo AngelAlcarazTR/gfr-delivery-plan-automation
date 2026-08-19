@@ -24,4 +24,28 @@ public sealed class DeliveryPlanJob(IDeliveryPlanRenderer renderer)
     // Computes the plan and returns the email HTML.
     public string GenerateHtml(ReleaseSchedule schedule, LocalDate today, HolidayCalendar? holidays = null)
         => _renderer.Render(BuildPlan(schedule, holidays), today);
+
+    // Reads a plan straight from the delivery-plan source (ADO today) and renders it.
+    // Takes the PORTS, not concrete adapters — stays cloud- and source-agnostic.
+    public async Task<string> GenerateFromSourceAsync(
+        IDeliveryPlanCatalog catalog,
+        IDeliveryPlanReader reader,
+        string planFilter,
+        LocalDate today,
+        CancellationToken ct = default)
+    {
+        // 1) Find candidate plans matching the filter (owner or name).
+        var matches = await catalog.FindPlansAsync(planFilter, ct);
+
+        // 2) Pick the first plan that has at least the QED marker (Prod or QedOnly).
+        foreach (var candidate in matches)
+        {
+            var plan = await reader.GetPlanAsync(candidate.Id, ct);
+            if (plan.Events.Any(e => e.Label == Milestone.QedDeploy))
+                return _renderer.Render(plan, today);
+        }
+
+        throw new InvalidOperationException(
+            $"No complete plan found for filter '{planFilter}'.");
+    }
 }
