@@ -9,3 +9,5 @@ global using Azure.Identity;
 global using Microsoft.Graph;
 global using Microsoft.Graph.Models;
 global using SkiaSharp;
+global using System.Net.Http.Json;
+global using Core.Application;

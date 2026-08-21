@@ -31,6 +31,7 @@ var config = new AdoConfig(
     Team: Setting("Ado:Team", "TaxProf Team"),
     Pat: pat,
     BaseUrl: Setting("Ado:BaseUrl", "https://dev.azure.com"),
+    TeamIds: configuration.GetSection("Ado:TeamIds").Get<string[]>() ?? [],
     ApiVersion: Setting("Ado:ApiVersion", "7.1"));
 
 // Configurable owner/text filter — today "mariana", tomorrow any owner/team.

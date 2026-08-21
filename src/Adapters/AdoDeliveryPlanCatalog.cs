@@ -3,6 +3,11 @@
 // Lists Delivery Plans from Azure DevOps and filters them by a free-text term
 // that matches the plan name or its owner (created/modified by), replicating
 // the ADO "planTextFilter" search box.
+//
+// Note: ordering/"which plan is current" is NO LONGER decided here. The catalog
+// only lists + filters + parses each plan's goal date from its name. Choosing
+// the current plan is a domain rule (CurrentPlanSelector), so a plan edited
+// out of order (e.g. February touched today) can no longer jump to the top.
 public class AdoDeliveryPlanCatalog(HttpClient http, AdoConfig config) : IDeliveryPlanCatalog
 {
     private readonly HttpClient _http = http;
@@ -45,11 +50,16 @@ public class AdoDeliveryPlanCatalog(HttpClient http, AdoConfig config) : IDelive
 
             // Prefer the creator as the displayed owner; fall back to modifier.
             var displayOwner = string.IsNullOrWhiteSpace(owner) ? modifiedBy : owner;
-            result.Add(new DeliveryPlanRef(id, name, displayOwner, modifiedAt));
+
+            // Goal date parsed from the plan name (null if the name does not match
+            // the "[GFR][year][Delivery Plan] - <Month> <Day>th ..." pattern).
+            var goalDate = PlanNameParser.ParseGoalDate(name);
+
+            result.Add(new DeliveryPlanRef(id, name, displayOwner, modifiedAt, goalDate));
         }
 
-        // Most recently modified first — a good proxy for "the current plan".
-        result.Sort((a, b) => b.ModifiedAt.CompareTo(a.ModifiedAt));
+        // No ModifiedAt sort here anymore: "which plan is current" is decided by
+        // CurrentPlanSelector (by goal date), not by recency of edits.
         return result;
     }
 

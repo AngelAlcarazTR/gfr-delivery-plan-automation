@@ -7,6 +7,7 @@ public record AdoConfig(
     string Project,
     string Team,
     string Pat,
+    IReadOnlyList<string> TeamIds,
     string BaseUrl = "https://dev.azure.com",
     string ApiVersion = "7.1")
 {
