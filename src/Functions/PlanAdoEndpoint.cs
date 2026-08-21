@@ -1,48 +1,46 @@
-﻿namespace Functions;  
+﻿namespace Functions;
 
-// GET /api/plan-ado  — Azure shell that reads the REAL plan from ADO.
-// Config comes from app settings (Ado__*), PAT included. Optional ?filter= override.
-public class PlanAdoEndpoint(ILogger<PlanAdoEndpoint> logger, IConfiguration configuration)
+// GET /api/plan-ado — reads the REAL plan from ADO.
+// AdoConfig + adapters come from DI (registered in Program.cs).
+// Filter precedence: ?filter= query  >  Ado:PlanFilter setting  (no person default).
+// TODO US-2: replace this owner/text filter with name/date selection (nearest goal >= today).
+public class PlanAdoEndpoint(
+    ILogger<PlanAdoEndpoint> logger,
+    IConfiguration configuration,
+    IDeliveryPlanReader reader,
+    IDeliveryPlanCatalog catalog)
 {
     private readonly ILogger<PlanAdoEndpoint> _logger = logger;
     private readonly IConfiguration _config = configuration;
+    private readonly IDeliveryPlanReader _reader = reader;
+    private readonly IDeliveryPlanCatalog _catalog = catalog;
 
     [Function("PlanAdo")]
     public async Task<IActionResult> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "plan-ado")] HttpRequest req,
         CancellationToken ct)
     {
-        string Setting(string key, string fallback) =>
-            _config[key] is { Length: > 0 } v ? v : fallback;
-
-        var pat = _config["Ado:Pat"] ?? "";
+        // Friendly early check (the injected AdoConfig would otherwise fail with 502).
+        var pat = _config["Ado:Pat"] ?? Environment.GetEnvironmentVariable("ADO_PAT") ?? "";
         if (string.IsNullOrWhiteSpace(pat))
             return new ObjectResult("Missing 'Ado__Pat' app setting.") { StatusCode = 400 };
 
-        // Filter: ?filter= wins, else app setting, else "mariana".
+        // Filter: ?filter= wins, else Ado:PlanFilter. No hidden person default.
         var planFilter = req.Query["filter"].ToString() is { Length: > 0 } f
             ? f
-            : Setting("Ado:PlanFilter", "mariana");
+            : _config["Ado:PlanFilter"];
 
-        var adoConfig = new AdoConfig(
-            Organization: Setting("Ado:Organization", "tr-tax"),
-            Project: Setting("Ado:Project", "TaxProf"),
-            Team: Setting("Ado:Team", "TaxProf Team"),
-            Pat: pat,
-            BaseUrl: Setting("Ado:BaseUrl", "https://dev.azure.com"),
-            ApiVersion: Setting("Ado:ApiVersion", "7.1"));
+        if (string.IsNullOrWhiteSpace(planFilter))
+            return new ObjectResult("Missing plan filter. Pass ?filter= or set 'Ado__PlanFilter'.")
+            { StatusCode = 400 };
 
         _logger.LogInformation("Reading plan from ADO with filter '{Filter}'", planFilter);
 
         try
         {
-            using var http = new HttpClient();
-            var catalog = new AdoDeliveryPlanCatalog(http, adoConfig);
-            var reader = new AdoDeliveryPlanReader(http, adoConfig);
-
             var job = new DeliveryPlanJob(new HtmlEmailRenderer());
             var html = await job.GenerateFromSourceAsync(
-                catalog, reader, planFilter, LocalDate.FromDateTime(DateTime.Today), ct);
+                _catalog, _reader, planFilter, LocalDate.FromDateTime(DateTime.Today), ct);
 
             return new ContentResult
             {

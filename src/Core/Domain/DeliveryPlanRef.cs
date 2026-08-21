@@ -6,4 +6,5 @@ public record DeliveryPlanRef(
     string Id,
     string Name,
     string Owner,
-    Instant ModifiedAt);
+    Instant ModifiedAt,
+    LocalDate? GoalDate);

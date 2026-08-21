@@ -37,15 +37,20 @@ public sealed class DeliveryPlanJob(IDeliveryPlanRenderer renderer)
         // 1) Find candidate plans matching the filter (owner or name).
         var matches = await catalog.FindPlansAsync(planFilter, ct);
 
-        // 2) Pick the first plan that has at least the QED marker (Prod or QedOnly).
-        foreach (var candidate in matches)
-        {
-            var plan = await reader.GetPlanAsync(candidate.Id, ct);
-            if (plan.Events.Any(e => e.Label == Milestone.QedDeploy))
-                return _renderer.Render(plan, today);
-        }
+        // 2) Pick the CURRENT plan by goal date (nearest >= today; fallback latest past).
+        //    This is a domain rule — NOT "first in the list" and NOT "most recently
+        //    edited" — so a plan edited out of order (e.g. February touched today)
+        //    cannot become the selected plan.
+        var current = CurrentPlanSelector.Pick(matches, today)
+            ?? throw new InvalidOperationException(
+                $"No plan with a parseable goal date matched filter '{planFilter}'.");
 
-        throw new InvalidOperationException(
-            $"No complete plan found for filter '{planFilter}'.");
+        // 3) Read its markers and render. Must have at least the QED marker.
+        var plan = await reader.GetPlanAsync(current.Id, ct);
+        if (!plan.Events.Any(e => e.Label == Milestone.QedDeploy))
+            throw new InvalidOperationException(
+                $"Selected plan '{current.Name}' has no QED marker.");
+
+        return _renderer.Render(plan, today);
     }
 }
