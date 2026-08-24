@@ -45,4 +45,38 @@ builder.Services.AddTransient<IDeliveryPlanWriter>(sp =>
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
         sp.GetRequiredService<AdoConfig>()));
 
+// --- Holidays wiring (US-5: SharePoint -> Blob loader + Blob reader) ---
+
+// Where the US holidays page lives (config-driven, not secret: just an address)
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new SharePointHolidaySource(
+        SiteId: cfg["Holidays:SiteId"] ?? "",
+        PageId: cfg["Holidays:PageId"] ?? "");
+});
+
+// Blob options (connection string from HolidaysStorage app setting — secret)
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new BlobHolidayReaderOptions(
+        ConnectionString: cfg["HolidaysStorage"] ?? "");
+});
+
+// Graph config (reuses the same TenantId/ClientId as the email path)
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new GraphConfig(
+        TenantId: cfg["Graph:TenantId"] ?? "",
+        ClientId: cfg["Graph:ClientId"] ?? "");
+});
+
+// The loader (used by the /api/holidays/load endpoint)
+builder.Services.AddTransient<SharePointHolidayLoader>();
+
+// The reader (used by the engine to read holidays from the Blob)
+builder.Services.AddTransient<IHolidayReader, BlobHolidayReader>();
+
 builder.Build().Run();

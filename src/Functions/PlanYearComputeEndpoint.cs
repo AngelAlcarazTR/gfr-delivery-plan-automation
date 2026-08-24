@@ -4,25 +4,17 @@
 // Given the year's anchors (in the body), runs the engine per month and returns
 // the computed plans as JSON. COMPUTE ONLY — it never writes to ADO.
 //
-// Purpose: backtesting / preview. Feed real 2025/2026 anchors and compare the
-// engine output against the real plans. The write path (create the 12 in ADO)
-// is a separate endpoint (plan-year/create) that will reuse this same engine.
-//
-// NOTE: computed dates carry the engine's current rules, including the open
-// items pending Félix (End Reg -3/-4, Start Dev QED-only -20/-15, Jul-4 vs Jul-3).
-// That is the point of this endpoint — to SEE those, not to hide them.
-public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
+// Holidays now come from the Blob (IHolidayReader) so dates use the OFFICIAL TR
+// dates (e.g. Independence Day = Jul 3 observed). Falls back to CompanyHolidays
+// when the year's blob is missing.
+public class PlanYearComputeEndpoint(
+    ILogger<PlanYearComputeEndpoint> logger,
+    IHolidayReader holidayReader)
 {
     private readonly ILogger<PlanYearComputeEndpoint> _logger = logger;
+    private readonly IHolidayReader _holidayReader = holidayReader;
 
-    // Business rule (VERIFIED vs 2025 & 2026 GoFileRoom calendars): during peak
-    // tax-season criticality GFR does NOT touch production, so these months are
-    // QED-only (no Release):
-    //   Jan-Mar -> individual + S-Corp/partnership deadlines (Mar 15 / Apr 15 lead-up)
-    //   Sep     -> estimated-tax (Sep 15) + extension deadline lead-up (Oct 15)
-    // Fixed by rule. Kept as a set so it can move to config if the rule ever changes.
     private static readonly int[] BusySeasonMonths = { 1, 2, 3, 9 };
-
     private static bool IsBusySeason(int month) => Array.IndexOf(BusySeasonMonths, month) >= 0;
 
     [Function("PlanYearCompute")]
@@ -43,6 +35,15 @@ public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
         if (request is null || request.Anchors is null || request.Anchors.Count == 0)
             return new BadRequestObjectResult("Body must include 'year' and a non-empty 'anchors' array.");
 
+        // Holidays for the year: from the Blob (official dates) or fallback to rules.
+        var holidayDates = await _holidayReader.GetHolidaysAsync(request.Year, ct);
+        var calendar = holidayDates is not null
+            ? new HolidayCalendar(holidayDates)
+            : CompanyHolidays.Calendar(request.Year, request.Year + 1);
+
+        _logger.LogInformation("Holidays for {Year}: {Source}",
+            request.Year, holidayDates is not null ? "Blob" : "fallback CompanyHolidays");
+
         var plans = new List<ComputedPlan>();
         var errors = new List<ComputeError>();
 
@@ -51,7 +52,7 @@ public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
             try
             {
                 var schedule = BuildSchedule(request.Year, a);
-                var plan = DeliveryPlanJob.BuildPlan(schedule);   // engine only, no rendering, no ADO
+                var plan = DeliveryPlanJob.BuildPlan(schedule, calendar);   // <-- pass holidays
 
                 var markers = plan.Events
                     .Select(e => new ComputedMarker(e.Label.ToString(), Iso(e.Date)))
@@ -73,8 +74,6 @@ public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
             request.Year, plans.Count, plans, errors));
     }
 
-    // Builds a ReleaseSchedule from one month's anchor input.
-    // Kind is INFERRED from the busy-season rule, not taken from the input.
     private static ReleaseSchedule BuildSchedule(int year, AnchorInput a)
     {
         if (a.Month is < 1 or > 12)
@@ -86,7 +85,6 @@ public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
             ? null
             : ParseDate(a.Release!, nameof(a.Release));
 
-        // Validate the input against the rule (fail clearly on contradiction).
         if (kind == PlanKind.QedOnly && release is not null)
             throw new ArgumentException(
                 $"Month {a.Month} is busy season (QED-only) and must not have a 'release' date.");
@@ -98,7 +96,6 @@ public class PlanYearComputeEndpoint(ILogger<PlanYearComputeEndpoint> logger)
         return new ReleaseSchedule(kind, qed, release, planName);
     }
 
-    // "[GFR][2026][Delivery Plan] - April 27th Release" / "... September 14th QED Release"
     private static string BuildPlanName(int year, PlanKind kind, LocalDate goal)
     {
         var month = CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(goal.Month);
