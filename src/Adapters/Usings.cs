@@ -11,3 +11,6 @@ global using Microsoft.Graph.Models;
 global using SkiaSharp;
 global using System.Net.Http.Json;
 global using Core.Application;
+global using Azure;
+global using Azure.Storage.Blobs;
+global using Azure.Core;
