@@ -40,11 +40,15 @@ public class AdoDeliveryPlanWriter(HttpClient http, AdoConfig config) : IDeliver
         PlanPublishOptions options,
         CancellationToken cancellationToken = default)
     {
-        var body = BuildBody(plan, options);
+        // 1) Create the plan. IMPORTANT: Azure DevOps' plan *create* endpoint
+        //    persists teams/criteria/cardSettings but SILENTLY DROPS the markers
+        //    array, so the plan is born with an empty "Markers" tab. Markers only
+        //    stick through a follow-up *update* (PUT) — see UpdateMarkersAsync.
+        var createBody = BuildBody(plan, options, revision: null);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, _config.PlansUrl())
         {
-            Content = JsonContent.Create(body, options: Json)
+            Content = JsonContent.Create(createBody, options: Json)
         };
         req.Headers.Authorization = _config.AuthHeader();
 
@@ -55,11 +59,79 @@ public class AdoDeliveryPlanWriter(HttpClient http, AdoConfig config) : IDeliver
             throw new InvalidOperationException(
                 $"ADO plan create failed ({(int)res.StatusCode} {res.StatusCode}): {payload}");
 
+        string planId, planName;
+        using (var doc = JsonDocument.Parse(payload))
+        {
+            var root = doc.RootElement;
+            planId = root.GetProperty("id").GetString()!;
+            planName = root.GetProperty("name").GetString()!;
+        }
+
+        // 2) Persist the markers via an update. Without this the Markers tab stays
+        //    empty. Skipped only when there is nothing to paint.
+        if (plan.Events.Count > 0)
+            await UpdateMarkersAsync(planId, plan, options, cancellationToken);
+
+        return new PublishedPlanRef(planId, planName);
+    }
+
+    // Re-sends the full plan body via PUT so the markers actually persist.
+    // ADO's update uses optimistic concurrency, so it needs the CURRENT revision.
+    // Right after creation two transient errors can occur — 403 (the plan ACL is
+    // still propagating) and 400 (a revision race) — so we re-read the revision
+    // and retry a few times with a short backoff.
+    private async Task UpdateMarkersAsync(
+        string planId,
+        DeliveryPlan plan,
+        PlanPublishOptions options,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 6;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var revision = await GetRevisionAsync(planId, cancellationToken);
+            var body = BuildBody(plan, options, revision);
+
+            using var req = new HttpRequestMessage(HttpMethod.Put, _config.PlanUrl(planId))
+            {
+                Content = JsonContent.Create(body, options: Json)
+            };
+            req.Headers.Authorization = _config.AuthHeader();
+
+            using var res = await _http.SendAsync(req, cancellationToken);
+            if (res.IsSuccessStatusCode)
+                return;
+
+            var payload = await res.Content.ReadAsStringAsync(cancellationToken);
+            var code = (int)res.StatusCode;
+
+            // 403 = ACL still settling after create; 400 = revision mismatch.
+            // Both are transient right after creation → back off and retry.
+            var transient = code is 400 or 403;
+            if (!transient || attempt >= maxAttempts)
+                throw new InvalidOperationException(
+                    $"ADO marker update failed ({code} {res.StatusCode}) " +
+                    $"after {attempt} attempt(s): {payload}");
+
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        }
+    }
+
+    private async Task<int> GetRevisionAsync(string planId, CancellationToken cancellationToken)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, _config.PlanUrl(planId));
+        req.Headers.Authorization = _config.AuthHeader();
+
+        using var res = await _http.SendAsync(req, cancellationToken);
+        var payload = await res.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                $"ADO plan read failed ({(int)res.StatusCode} {res.StatusCode}): {payload}");
+
         using var doc = JsonDocument.Parse(payload);
-        var root = doc.RootElement;
-        return new PublishedPlanRef(
-            root.GetProperty("id").GetString()!,
-            root.GetProperty("name").GetString()!);
+        return doc.RootElement.GetProperty("revision").GetInt32();
     }
 
     public async Task DeleteAsync(string planId, CancellationToken cancellationToken = default)
@@ -78,7 +150,7 @@ public class AdoDeliveryPlanWriter(HttpClient http, AdoConfig config) : IDeliver
 
     // ---- body construction ------------------------------------------------
 
-    private object BuildBody(DeliveryPlan plan, PlanPublishOptions options)
+    private object BuildBody(DeliveryPlan plan, PlanPublishOptions options, int? revision)
     {
         // Teams come from config (AdoConfig.TeamIds) -> no hardcoded GUIDs.
         var teamBacklogMappings = _config.TeamIds
@@ -119,20 +191,29 @@ public class AdoDeliveryPlanWriter(HttpClient http, AdoConfig config) : IDeliver
             })
             .ToArray();
 
-        return new
+        var properties = new
         {
-            name = options.Name,
-            type = "deliveryTimelineView",
-            properties = new
-            {
-                teamBacklogMappings,
-                criteria,
-                cardSettings = DefaultCardSettings,
-                markers,
-                styleSettings = Array.Empty<object>(),
-                tagStyleSettings = Array.Empty<object>()
-            }
+            teamBacklogMappings,
+            criteria,
+            cardSettings = DefaultCardSettings,
+            markers,
+            styleSettings = Array.Empty<object>(),
+            tagStyleSettings = Array.Empty<object>()
         };
+
+        var body = new Dictionary<string, object>
+        {
+            ["name"] = options.Name,
+            ["type"] = "deliveryTimelineView",
+            ["properties"] = properties
+        };
+
+        // Update (PUT) requires the current revision for optimistic concurrency.
+        // Create (POST) must NOT send it.
+        if (revision is not null)
+            body["revision"] = revision.Value;
+
+        return body;
     }
 
     // Card settings copied verbatim from the real April 2026 plan.
