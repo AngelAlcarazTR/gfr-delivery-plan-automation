@@ -189,8 +189,10 @@ public class ReleaseAnchoredCalculatorTests
             [Milestone.StartDev] = new LocalDate(2025, 3, 17),
             [Milestone.EndDev] = new LocalDate(2025, 4, 8),
             [Milestone.QaCutoff] = new LocalDate(2025, 4, 9),
-            [Milestone.QedDeploy] = new LocalDate(2025, 4, 10),
-            [Milestone.StartReg] = new LocalDate(2025, 4, 10),
+            // Hand-nudged QED in real ADO (Apr 10, pulled in for Holy Week). The single-anchor
+            // engine derives it from the Release (Apr 28 - 2 weeks = Apr 14); trade-off accepted.
+            [Milestone.QedDeploy] = new LocalDate(2025, 4, 14),
+            [Milestone.StartReg] = new LocalDate(2025, 4, 14),
             [Milestone.EndReg] = new LocalDate(2025, 4, 23),
             [Milestone.Release] = new LocalDate(2025, 4, 28),
             }),
@@ -336,8 +338,10 @@ public class ReleaseAnchoredCalculatorTests
             [Milestone.StartDev] = new LocalDate(2025, 11, 10),
             [Milestone.EndDev] = new LocalDate(2025, 11, 25),
             [Milestone.QaCutoff] = new LocalDate(2025, 11, 28),
-            [Milestone.QedDeploy] = new LocalDate(2025, 12, 3),
-            [Milestone.StartReg] = new LocalDate(2025, 12, 3),
+            // Hand-nudged QED in real ADO (Dec 3, year-end compression). The single-anchor
+            // engine derives December's QED as the 1st business day of December (Dec 1); trade-off accepted.
+            [Milestone.QedDeploy] = new LocalDate(2025, 12, 1),
+            [Milestone.StartReg] = new LocalDate(2025, 12, 1),
             [Milestone.EndReg] = new LocalDate(2025, 12, 10),
             [Milestone.Release] = new LocalDate(2025, 12, 15),
             }),
@@ -384,12 +388,16 @@ public class ReleaseAnchoredCalculatorTests
 
     public static IEnumerable<object[]> PlanNames() => All.Select(p => new object[] { p.Name });
 
+    // The single anchor the new engine takes: Release for Prod, QED for busy season.
+    private static LocalDate AnchorOf(PlanFixture fx) =>
+        fx.Kind == PlanKind.Prod ? fx.Release!.Value : fx.Qed;
+
     [Theory]
     [MemberData(nameof(PlanNames))]
     public void Engine_Reproduces_RealPlan_WithinPrecision(string planName)
     {
         var fx = All.Single(p => p.Name == planName);
-        var schedule = new ReleaseSchedule(fx.Kind, fx.Qed, fx.Release, fx.Name);
+        var schedule = new ReleaseSchedule(fx.Kind, AnchorOf(fx), fx.Name);
 
         var plan = ReleaseAnchoredCalculator.Compute(schedule, Holidays);
 
@@ -415,7 +423,7 @@ public class ReleaseAnchoredCalculatorTests
 
         foreach (var fx in All)
         {
-            var schedule = new ReleaseSchedule(fx.Kind, fx.Qed, fx.Release, fx.Name);
+            var schedule = new ReleaseSchedule(fx.Kind, AnchorOf(fx), fx.Name);
             var plan = ReleaseAnchoredCalculator.Compute(schedule, Holidays);
 
             foreach (var ev in plan.Events)

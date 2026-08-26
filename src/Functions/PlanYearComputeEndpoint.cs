@@ -80,20 +80,9 @@ public class PlanYearComputeEndpoint(
             throw new ArgumentException($"Invalid month '{a.Month}'.");
 
         var kind = IsBusySeason(a.Month) ? PlanKind.QedOnly : PlanKind.Prod;
-        var qed = ParseDate(a.Qed, nameof(a.Qed));
-        LocalDate? release = string.IsNullOrWhiteSpace(a.Release)
-            ? null
-            : ParseDate(a.Release!, nameof(a.Release));
-
-        if (kind == PlanKind.QedOnly && release is not null)
-            throw new ArgumentException(
-                $"Month {a.Month} is busy season (QED-only) and must not have a 'release' date.");
-        if (kind == PlanKind.Prod && release is null)
-            throw new ArgumentException(
-                $"Month {a.Month} is a production month and requires a 'release' date.");
-
-        var planName = BuildPlanName(year, kind, release ?? qed);
-        return new ReleaseSchedule(kind, qed, release, planName);
+        var anchor = ParseDate(a.Anchor, nameof(a.Anchor));
+        var planName = BuildPlanName(year, kind, anchor);
+        return new ReleaseSchedule(kind, anchor, planName);
     }
 
     private static string BuildPlanName(int year, PlanKind kind, LocalDate goal)

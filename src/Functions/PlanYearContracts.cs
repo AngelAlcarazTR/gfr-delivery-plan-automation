@@ -10,14 +10,16 @@ public sealed record PlanYearComputeRequest(
     int Year,
     IReadOnlyList<AnchorInput> Anchors);
 
-// One month's anchors. Dates are ISO strings ("2026-04-13") to avoid ambiguity.
+// One month's anchor. The date is an ISO string ("2026-04-13") to avoid ambiguity.
 // NOTE: there is NO "kind" field. Whether a month is Prod or QedOnly is a fixed
 // business rule (busy season = QED-only), inferred by the endpoint from the month.
-// Release is provided only for Prod months; it must be null/absent for busy months.
+// The single 'anchor' is the one real date the planners commit to that month:
+//   Prod months     -> anchor = the AMER/UK production Release date.
+//   Busy-season months (QED-only) -> anchor = the QED deploy date.
+// Everything else (QED for Prod, and every backbone marker) is derived by the engine.
 public sealed record AnchorInput(
     int Month,
-    string Qed,
-    string? Release = null);
+    string Anchor);
 
 // ---- Response ---------------------------------------------------------------
 
