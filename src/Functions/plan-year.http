@@ -1,0 +1,47 @@
+# plan-year endpoints — single-anchor body (Release for Prod months, QED for busy season {1,2,3,9}).
+# Use with the VS Code "REST Client" extension or JetBrains Rider. Start the host first:
+#   cd src/Functions && func start   (exposes http://localhost:7071)
+
+@host = http://localhost:7071
+
+### compute — small sample (compute only, never writes to ADO)
+POST {{host}}/api/plan-year/compute
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "anchors": [
+    { "month": 4, "anchor": "2026-04-27" },
+    { "month": 3, "anchor": "2026-03-16" }
+  ]
+}
+
+### compute — full 2026 year
+POST {{host}}/api/plan-year/compute
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "anchors": [
+    { "month": 1, "anchor": "2026-01-19" },
+    { "month": 2, "anchor": "2026-02-16" },
+    { "month": 3, "anchor": "2026-03-16" },
+    { "month": 4, "anchor": "2026-04-27" },
+    { "month": 5, "anchor": "2026-05-26" },
+    { "month": 6, "anchor": "2026-06-22" },
+    { "month": 7, "anchor": "2026-07-27" },
+    { "month": 9, "anchor": "2026-09-14" }
+  ]
+}
+
+### create — writes to ADO (idempotent: skips plans whose name already exists)
+POST {{host}}/api/plan-year/create
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "anchors": [
+    { "month": 4, "anchor": "2026-04-27" },
+    { "month": 3, "anchor": "2026-03-16" }
+  ]
+}
