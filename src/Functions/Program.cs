@@ -45,6 +45,26 @@ builder.Services.AddTransient<IDeliveryPlanWriter>(sp =>
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
         sp.GetRequiredService<AdoConfig>()));
 
+// --- Email rendering wiring ---
+// Branding + footer links are configuration. Leave Email__DashboardUrl /
+// Email__TicketStatusUrl unset to get per-release deep-links (built from the
+// plan's own id/tags); set either to pin a fixed URL (e.g. a saved ADO query).
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new EmailBranding(
+        SenderName: cfg["Email:SenderName"] ?? EmailBranding.Default.SenderName,
+        SenderTitle: cfg["Email:SenderTitle"] ?? EmailBranding.Default.SenderTitle,
+        DashboardUrl: cfg["Email:DashboardUrl"] ?? "",
+        TicketStatusUrl: cfg["Email:TicketStatusUrl"] ?? "");
+});
+
+// The renderer also gets AdoConfig so it can build the per-release deep-links.
+builder.Services.AddTransient<IDeliveryPlanRenderer>(sp =>
+    new HtmlEmailRenderer(
+        sp.GetRequiredService<EmailBranding>(),
+        sp.GetRequiredService<AdoConfig>()));
+
 // --- Holidays wiring (US-5: SharePoint -> Blob loader + Blob reader) ---
 
 // Where the US holidays page lives (config-driven, not secret: just an address)

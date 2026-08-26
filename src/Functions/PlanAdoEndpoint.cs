@@ -8,12 +8,14 @@ public class PlanAdoEndpoint(
     ILogger<PlanAdoEndpoint> logger,
     IConfiguration configuration,
     IDeliveryPlanReader reader,
-    IDeliveryPlanCatalog catalog)
+    IDeliveryPlanCatalog catalog,
+    IDeliveryPlanRenderer renderer)
 {
     private readonly ILogger<PlanAdoEndpoint> _logger = logger;
     private readonly IConfiguration _config = configuration;
     private readonly IDeliveryPlanReader _reader = reader;
     private readonly IDeliveryPlanCatalog _catalog = catalog;
+    private readonly IDeliveryPlanRenderer _renderer = renderer;
 
     [Function("PlanAdo")]
     public async Task<IActionResult> Run(
@@ -38,7 +40,7 @@ public class PlanAdoEndpoint(
 
         try
         {
-            var job = new DeliveryPlanJob(new HtmlEmailRenderer());
+            var job = new DeliveryPlanJob(_renderer);
             var html = await job.GenerateFromSourceAsync(
                 _catalog, _reader, planFilter, LocalDate.FromDateTime(DateTime.Today), ct);
 

@@ -3,9 +3,16 @@
 public class HtmlEmailRenderer : IDeliveryPlanRenderer
 {
     private readonly EmailBranding _branding;
+    private readonly AdoConfig? _ado;
 
-    public HtmlEmailRenderer(EmailBranding? branding = null) =>
+    // 'ado' is optional: when supplied (real ADO plans) the buttons deep-link to
+    // this release's plan + ticket query. Without it (unit tests / computed POC
+    // plans) the buttons fall back to the configured branding URLs.
+    public HtmlEmailRenderer(EmailBranding? branding = null, AdoConfig? ado = null)
+    {
         _branding = branding ?? EmailBranding.Default;
+        _ado = ado;
+    }
 
     private static readonly string[] ShortMonths =
         ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -37,7 +44,7 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
 
         sb.Append(RenderHeader(plan, d, today));
         sb.Append(RenderPhaseGrid(d));
-        sb.Append(RenderFooter());
+        sb.Append(RenderFooter(ResolveLinks(plan)));
 
         sb.Append("</table></td></tr></table></body></html>");
         return sb.ToString();
@@ -164,20 +171,44 @@ public class HtmlEmailRenderer : IDeliveryPlanRenderer
         """;
     }
 
-    private string RenderFooter()
+    // Resolves the two footer links. Precedence per button:
+    //   1) an explicit configured URL (EmailBranding) wins — lets ops pin a link
+    //      (e.g. Mariana's saved query) without a redeploy;
+    //   2) otherwise a per-release deep-link built from the plan's own id/tags;
+    //   3) otherwise "#" (no destination — computed POC plans with no source).
+    private (string Dashboard, string Ticket) ResolveLinks(DeliveryPlan plan)
+    {
+        var dashboard = Configured(_branding.DashboardUrl)
+            ?? (_ado is not null && plan.PlanId is { Length: > 0 } id
+                ? AdoPlanLinks.DeliveryPlanUrl(_ado, id)
+                : "#");
+
+        var ticket = Configured(_branding.TicketStatusUrl)
+            ?? (_ado is not null && plan.Tags is { Count: > 0 } tags
+                ? AdoPlanLinks.TicketStatusQueryUrl(_ado, tags)
+                : "#");
+
+        return (dashboard, ticket);
+    }
+
+    // Treats blank and the "#" placeholder as "not configured".
+    private static string? Configured(string? url) =>
+        string.IsNullOrWhiteSpace(url) || url == "#" ? null : url;
+
+    private string RenderFooter((string Dashboard, string Ticket) links)
     {
         return $"""
         <tr><td style="padding:16px 30px 6px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #FA4616;border-radius:4px;mso-padding-alt:0;">
-              <a href="{_branding.DashboardUrl}" style="display:block;line-height:46px;font-size:15px;font-weight:bold;color:#FA4616;text-decoration:none;">Open the release dashboard &rarr;</a>
+              <a href="{links.Dashboard}" style="display:block;line-height:46px;font-size:15px;font-weight:bold;color:#FA4616;text-decoration:none;">Open the release dashboard &rarr;</a>
             </td></tr>
           </table>
         </td></tr>
         <tr><td style="padding:10px 30px 4px;">
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;">
             <tr><td height="46" bgcolor="#ffffff" style="height:46px;background:#ffffff;text-align:center;border:2px solid #185FA5;border-radius:4px;mso-padding-alt:0;">
-              <a href="{_branding.TicketStatusUrl}" style="display:block;line-height:46px;font-size:14px;font-weight:bold;color:#185FA5;text-decoration:none;">View ticket status &rarr;</a>
+              <a href="{links.Ticket}" style="display:block;line-height:46px;font-size:14px;font-weight:bold;color:#185FA5;text-decoration:none;">View ticket status &rarr;</a>
             </td></tr>
           </table>
         </td></tr>

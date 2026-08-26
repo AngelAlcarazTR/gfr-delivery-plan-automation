@@ -14,9 +14,10 @@
 //     /api/plan?qed=2026-10-12&release=2026-10-26  -> future plan (shows the countdown)
 //     /api/plan?qed=2026-02-09&kind=qedonly        -> month with no Release (QED only)
 // ============================================================
-public class PlanEndpoint(ILogger<PlanEndpoint> logger)
+public class PlanEndpoint(ILogger<PlanEndpoint> logger, IDeliveryPlanRenderer renderer)
 {
     private readonly ILogger<PlanEndpoint> _logger = logger;
+    private readonly IDeliveryPlanRenderer _renderer = renderer;
     private static readonly LocalDatePattern Iso = LocalDatePattern.Iso;
 
     [Function("Plan")]
@@ -34,8 +35,8 @@ public class PlanEndpoint(ILogger<PlanEndpoint> logger)
 
         var schedule = new ReleaseSchedule(kind, qed, release, PlanName: "POC");
 
-        // The shell wires the agnostic job with the concrete renderer and invokes it.
-        var job = new DeliveryPlanJob(new HtmlEmailRenderer());
+        // The shell wires the agnostic job with the injected renderer and invokes it.
+        var job = new DeliveryPlanJob(_renderer);
         var html = job.GenerateHtml(schedule, LocalDate.FromDateTime(DateTime.Today));
 
         return new ContentResult

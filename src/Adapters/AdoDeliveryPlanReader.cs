@@ -26,23 +26,44 @@ public class AdoDeliveryPlanReader(HttpClient http, AdoConfig config) : IDeliver
         var root = doc.RootElement;
 
         var planName = root.GetProperty("name").GetString() ?? "";
+        var planId = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
 
         var events = new List<PlanEvent>();
         var seen = new HashSet<Milestone>();
+        List<string>? tags = null;
 
-        if (root.TryGetProperty("properties", out var props) &&
-            props.TryGetProperty("markers", out var markers) &&
-            markers.ValueKind == JsonValueKind.Array)
+        if (root.TryGetProperty("properties", out var props))
         {
-            foreach (var marker in markers.EnumerateArray())
+            if (props.TryGetProperty("markers", out var markers) &&
+                markers.ValueKind == JsonValueKind.Array)
             {
-                var label = marker.GetProperty("label").GetString() ?? "";
-                var milestone = MapLabel(label);
-                if (milestone is null || !seen.Add(milestone.Value))
-                    continue; // unknown label or duplicate milestone — skip
+                foreach (var marker in markers.EnumerateArray())
+                {
+                    var label = marker.GetProperty("label").GetString() ?? "";
+                    var milestone = MapLabel(label);
+                    if (milestone is null || !seen.Add(milestone.Value))
+                        continue; // unknown label or duplicate milestone — skip
 
-                var date = ParseAdoDate(marker.GetProperty("date").GetString()!);
-                events.Add(new PlanEvent(milestone.Value, date, false, null));
+                    var date = ParseAdoDate(marker.GetProperty("date").GetString()!);
+                    events.Add(new PlanEvent(milestone.Value, date, false, null));
+                }
+            }
+
+            // The plan's tag filter(s) drive which tickets belong to this release.
+            // We capture them so the email can deep-link to a live status query.
+            if (props.TryGetProperty("criteria", out var criteria) &&
+                criteria.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var c in criteria.EnumerateArray())
+                {
+                    if (c.TryGetProperty("fieldName", out var fn) &&
+                        string.Equals(fn.GetString(), "System.Tags", StringComparison.OrdinalIgnoreCase) &&
+                        c.TryGetProperty("value", out var v) &&
+                        v.GetString() is { Length: > 0 } tag)
+                    {
+                        (tags ??= new()).Add(tag);
+                    }
+                }
             }
         }
 
@@ -52,7 +73,7 @@ public class AdoDeliveryPlanReader(HttpClient http, AdoConfig config) : IDeliver
         var startDate = events.Count > 0 ? events[0].Date : default;
         var sprint = new Sprint(startDate, planName);
 
-        return new DeliveryPlan(sprint, events);
+        return new DeliveryPlan(sprint, events, planId, tags);
     }
 
     // Maps the free-text ADO marker label to a domain Milestone.
