@@ -1,66 +1,121 @@
 namespace Core.Application;
 
-// Builds a delivery plan backward from the calendar anchors (QED deploy, and the
-// production Release for Prod plans), reverse-engineered from 25 real GFR plans
-// (2024-2026) cross-referenced with the production release calendar and holidays.
+// Builds a whole delivery plan backward from a SINGLE calendar anchor, reverse-engineered
+// from 25 real GFR plans (2024-2026) cross-referenced with the production release calendar
+// and holidays. The engine takes one date (plus the plan kind) and derives everything:
+//   Prod    -> Anchor is the AMER/UK production Release. The QED deploy is derived from it
+//              (Release - 2 weeks, on that week's Monday; December uses the first business
+//              day of December, its year-end compression QED). Every other marker follows.
+//   QedOnly -> Anchor is the QED deploy itself (busy-season months have no Release).
 //
 // Deterministic backbone (business-day offsets, weekends only — NOT holiday-shifted,
 // because the real markers stay on their weekday even when a holiday lands on them):
 //   Start Regression = QED
 //   QA Cut-off       = QED - 1 business day   (the Friday before the QED Monday)
 //   End Development   = QED - 4 business days   (the Tuesday of the prior week)
-//   End Regression    = Release - 3 business days               (Prod only)
-//   Release          = calendar anchor                          (Prod only)
+//   End Regression    = (Monday of the Release week) - 3 business days   (Prod only)
+//   Release          = the anchor                                        (Prod only)
 //
-// Start Development is the one planned marker: nominal offset, rolled off holidays.
-//   Prod    -> QED - 15 business days
-//   QedOnly -> QED - 20 business days
+// Start Development is a suggested/editable marker: weekends only (NOT holiday-shifted).
+// The real GFR plans place StartDev on its nominal weekday even when a US holiday lands
+// on it (e.g. Feb 2026 StartDev = MLK Day, Jun 2026 StartDev = Memorial Day), so no
+// roll-forward is applied.
+//   Prod    -> (Monday of the Release week) - 25 business days.
+//              The Release is the anchor and everything derives from it. Anchoring on the
+//              week's Monday (not the raw, possibly holiday-rolled Release) keeps Tuesday
+//              releases (May/Oct) aligned and naturally handles December's wider
+//              QED<->Release gap with no special case. On normal months this equals QED-15.
+//   QedOnly -> QED - 20 business days (busy-season months have no production Release).
+// The 2 residual misses (Apr-2025 Holy Week pull-in, Jun-2026 compressed cycle) are human
+// planning adjustments, not calendar-derivable (the same months are on-rule in the other year).
 public static class ReleaseAnchoredCalculator
 {
     private const int QaCutoffOffset = -1;
     private const int EndDevOffset = -4;
     private const int EndRegOffset = -3;
-    private const int StartDevOffsetProd = -15;
+    private const int StartDevOffsetProdFromReleaseMonday = -25;
     private const int StartDevOffsetQedOnly = -20;
+    private const int DecemberMonth = 12;
 
     public static DeliveryPlan Compute(ReleaseSchedule schedule, HolidayCalendar? holidays = null)
     {
         holidays ??= HolidayCalendar.None;
-        var qed = schedule.QedDeploy;
+        var anchor = schedule.Anchor;
+        var isProd = schedule.Kind == PlanKind.Prod;
+
+        // From the single anchor, recover the QED deploy and (for Prod) the Release week.
+        LocalDate qed;
+        LocalDate? release = null;
+        LocalDate releaseWeekMonday = default;
+        if (isProd)
+        {
+            release = anchor;
+            // The Monday of the Release week — the true anchor for both StartDev and EndReg.
+            // When the Release rolls to a Tuesday (e.g. May/Oct land the day after Memorial Day
+            // / the 4th Monday), counting from the raw Release would drift the windows +1;
+            // counting from the week's Monday keeps them stable.
+            releaseWeekMonday = MondayOfWeek(anchor);
+            qed = QedFromRelease(anchor, holidays);
+        }
+        else
+        {
+            qed = anchor;
+        }
 
         var startReg = qed;
         var qaCutoff = BusinessDayCalculator.AddBusinessDays(qed, QaCutoffOffset);
         var endDev = BusinessDayCalculator.AddBusinessDays(qed, EndDevOffset);
 
-        // Start Development — planned marker: nominal offset rolled off weekends/holidays.
-        var nominalStartDev = BusinessDayCalculator.AddBusinessDays(
-            qed,
-            schedule.Kind == PlanKind.Prod ? StartDevOffsetProd : StartDevOffsetQedOnly);
-        var startDev = holidays.RollForwardToBusinessDay(nominalStartDev);
-        var startDevAdjusted = startDev != nominalStartDev;
+        // Start Development — Release-anchored for Prod (everything derives from the Release);
+        // QED-anchored only for the busy-season QedOnly months that have no Release.
+        var startDev = isProd
+            ? BusinessDayCalculator.AddBusinessDays(releaseWeekMonday, StartDevOffsetProdFromReleaseMonday)
+            : BusinessDayCalculator.AddBusinessDays(qed, StartDevOffsetQedOnly);
 
         var events = new List<PlanEvent>
         {
-            new(Milestone.StartDev, startDev, startDevAdjusted, startDevAdjusted ? nominalStartDev : null),
+            new(Milestone.StartDev, startDev, false, null),
             new(Milestone.EndDev, endDev, false, null),
             new(Milestone.QaCutoff, qaCutoff, false, null),
-            new(Milestone.QedDeploy, qed, false, null)
+            new(Milestone.QedDeploy, qed, false, null),
+            new(Milestone.StartReg, startReg, false, null),
         };
 
-        if (schedule.Kind == PlanKind.Prod)
+        if (isProd)
         {
-            var release = schedule.Release
-                ?? throw new ArgumentException("Release date is required for Prod plans.", nameof(schedule));
-            var endReg = BusinessDayCalculator.AddBusinessDays(release, EndRegOffset);
-
-            events.Add(new PlanEvent(Milestone.StartReg, startReg, false, null));
+            var endReg = BusinessDayCalculator.AddBusinessDays(releaseWeekMonday, EndRegOffset);
             events.Add(new PlanEvent(Milestone.EndReg, endReg, false, null));
-            events.Add(new PlanEvent(Milestone.Release, release, false, null));
+            events.Add(new PlanEvent(Milestone.Release, release!.Value, false, null));
         }
 
         events.Sort((a, b) => a.Date.CompareTo(b.Date));
 
         var sprint = new Sprint(startDev, schedule.PlanName);
         return new DeliveryPlan(sprint, events);
+    }
+
+    // Derives the QED deploy from the production Release (Prod anchor).
+    //   Normal months: Release - 2 weeks, stepped back to that week's Monday. The QED is
+    //   always a Monday and is kept even if it lands on a US holiday (e.g. Oct-2025 QED =
+    //   Columbus Day).
+    //   December: year-end compression — the QED is the first business day of December,
+    //   which is NOT Release - 2 weeks, so it is computed directly from the calendar.
+    private static LocalDate QedFromRelease(LocalDate release, HolidayCalendar holidays)
+    {
+        if (release.Month == DecemberMonth)
+            return holidays.RollForwardToBusinessDay(new LocalDate(release.Year, DecemberMonth, 1));
+
+        var qed = release.PlusWeeks(-2);
+        while (qed.DayOfWeek != IsoDayOfWeek.Monday)
+            qed = qed.PlusDays(-1);
+        return qed;
+    }
+
+    private static LocalDate MondayOfWeek(LocalDate date)
+    {
+        var d = date;
+        while (d.DayOfWeek != IsoDayOfWeek.Monday)
+            d = d.PlusDays(-1);
+        return d;
     }
 }

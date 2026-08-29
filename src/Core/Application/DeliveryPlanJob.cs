@@ -2,8 +2,9 @@
 
 // ============================================================
 //  Cloud-agnostic use case — knows nothing about Azure or AWS.
-//  Given one or two anchors (QED / Release), it computes the plan
-//  with the engine and renders it to HTML via the renderer port.
+//  Given a SINGLE calendar anchor (Release for Prod, QED for busy season),
+//  it computes the plan with the engine and renders it to HTML via the
+//  renderer port.
 //
 //  Any cloud "shell" (Azure Function, AWS Lambda, a Timer, an HTTP
 //  endpoint) only has to INVOKE this job.
@@ -16,8 +17,8 @@ public sealed class DeliveryPlanJob(IDeliveryPlanRenderer renderer)
     // Computes the plan only (no rendering). Handy for validating/comparing against ADO later.
     public static DeliveryPlan BuildPlan(ReleaseSchedule schedule, HolidayCalendar? holidays = null)
     {
-        // If no calendar is supplied, use the company holidays for the QED's year (+ the next one).
-        holidays ??= CompanyHolidays.Calendar(schedule.QedDeploy.Year, schedule.QedDeploy.Year + 1);
+        // If no calendar is supplied, use the company holidays for the anchor's year (+ the next one).
+        holidays ??= CompanyHolidays.Calendar(schedule.Anchor.Year, schedule.Anchor.Year + 1);
         return ReleaseAnchoredCalculator.Compute(schedule, holidays);
     }
 

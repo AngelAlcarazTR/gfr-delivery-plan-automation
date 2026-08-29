@@ -33,7 +33,9 @@ public class PlanEndpoint(ILogger<PlanEndpoint> logger, IDeliveryPlanRenderer re
 
         _logger.LogInformation("Generating plan: QED={Qed} Release={Rel} Kind={Kind}", qed, release, kind);
 
-        var schedule = new ReleaseSchedule(kind, qed, release, PlanName: "POC");
+        // Single-anchor engine: the anchor is the Release for Prod, else the QED.
+        var anchor = kind == PlanKind.Prod ? release!.Value : qed;
+        var schedule = new ReleaseSchedule(kind, anchor, PlanName: "POC");
 
         // The shell wires the agnostic job with the injected renderer and invokes it.
         var job = new DeliveryPlanJob(_renderer);
