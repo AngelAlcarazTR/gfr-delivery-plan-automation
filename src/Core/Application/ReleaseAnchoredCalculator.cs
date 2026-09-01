@@ -10,11 +10,15 @@ namespace Core.Application;
 //
 // Deterministic backbone (business-day offsets, weekends only — NOT holiday-shifted,
 // because the real markers stay on their weekday even when a holiday lands on them):
-//   Start Regression = QED
+//   Start Regression = QED                                              (Prod only)
 //   QA Cut-off       = QED - 1 business day   (the Friday before the QED Monday)
 //   End Development   = QED - 4 business days   (the Tuesday of the prior week)
 //   End Regression    = (Monday of the Release week) - 3 business days   (Prod only)
 //   Release          = the anchor                                        (Prod only)
+//
+// The regression window (Start Regression -> End Regression -> Release) only exists
+// for production months. Busy-season QedOnly plans stop at the QED deploy, so they
+// emit no StartReg/EndReg/Release (that matches the real ADO plans exactly).
 //
 // Start Development is a suggested/editable marker: weekends only (NOT holiday-shifted).
 // The real GFR plans place StartDev on its nominal weekday even when a US holiday lands
@@ -62,7 +66,6 @@ public static class ReleaseAnchoredCalculator
             qed = anchor;
         }
 
-        var startReg = qed;
         var qaCutoff = BusinessDayCalculator.AddBusinessDays(qed, QaCutoffOffset);
         var endDev = BusinessDayCalculator.AddBusinessDays(qed, EndDevOffset);
 
@@ -78,12 +81,15 @@ public static class ReleaseAnchoredCalculator
             new(Milestone.EndDev, endDev, false, null),
             new(Milestone.QaCutoff, qaCutoff, false, null),
             new(Milestone.QedDeploy, qed, false, null),
-            new(Milestone.StartReg, startReg, false, null),
         };
 
+        // Regression window (Start Regression = QED, then End Regression, then Release)
+        // exists ONLY for production months. Busy-season QedOnly plans have no Release,
+        // so the plan ends at the QED deploy — no StartReg/EndReg/Release is emitted.
         if (isProd)
         {
             var endReg = BusinessDayCalculator.AddBusinessDays(releaseWeekMonday, EndRegOffset);
+            events.Add(new PlanEvent(Milestone.StartReg, qed, false, null));
             events.Add(new PlanEvent(Milestone.EndReg, endReg, false, null));
             events.Add(new PlanEvent(Milestone.Release, release!.Value, false, null));
         }

@@ -461,4 +461,37 @@ public class ReleaseAnchoredCalculatorTests
         // no regression phase in real ADO, so those two fake exact-matches are gone.
         Assert.True(totalExact >= 126, $"Total exact {totalExact}/{totalPresent}");
     }
+
+    // Busy-season (QedOnly) plans have NO Release, so no regression window exists:
+    // the plan must stop at the QED deploy — no StartReg/EndReg/Release.
+    [Fact]
+    public void QedOnlyPlans_EmitNoRegressionMarkers()
+    {
+        foreach (var fx in All.Where(p => p.Kind == PlanKind.QedOnly))
+        {
+            var schedule = new ReleaseSchedule(fx.Kind, AnchorOf(fx), fx.Name);
+            var labels = ReleaseAnchoredCalculator.Compute(schedule, Holidays)
+                .Events.Select(e => e.Label).ToHashSet();
+
+            Assert.DoesNotContain(Milestone.StartReg, labels);
+            Assert.DoesNotContain(Milestone.EndReg, labels);
+            Assert.DoesNotContain(Milestone.Release, labels);
+        }
+    }
+
+    // Production plans DO have the full regression window.
+    [Fact]
+    public void ProdPlans_EmitFullRegressionWindow()
+    {
+        foreach (var fx in All.Where(p => p.Kind == PlanKind.Prod))
+        {
+            var schedule = new ReleaseSchedule(fx.Kind, AnchorOf(fx), fx.Name);
+            var labels = ReleaseAnchoredCalculator.Compute(schedule, Holidays)
+                .Events.Select(e => e.Label).ToHashSet();
+
+            Assert.Contains(Milestone.StartReg, labels);
+            Assert.Contains(Milestone.EndReg, labels);
+            Assert.Contains(Milestone.Release, labels);
+        }
+    }
 }
