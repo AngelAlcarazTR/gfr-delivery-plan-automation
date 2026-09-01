@@ -4,10 +4,14 @@ public record MonthAnchor(
     [property: Description("Month 1-12")] int Month,
     [property: Description("Anchor date ISO yyyy-MM-dd (Release for Prod months, QED for busy season)")] string Anchor);
 
+public record HolidayInput(
+    [property: Description("Holiday date ISO yyyy-MM-dd")] string Date,
+    [property: Description("Display name, e.g. 'New Year's Day'")] string Name);
+
 [McpServerToolType]
 public static class PlanTools
 {
-    private static readonly int[] BusySeasonMonths = { 1, 2, 3, 9 };
+    private static readonly int[] BusySeasonMonths = [1, 2, 3, 9];
     private static bool IsBusySeason(int month) => Array.IndexOf(BusySeasonMonths, month) >= 0;
 
     [McpServerTool, Description(
@@ -65,7 +69,7 @@ public static class PlanTools
     "Creates GFR delivery plans in Azure DevOps from single-anchor months. Uses the same " +
     "engine as compute_plan_year, then WRITES each plan to ADO. Idempotent: a plan whose " +
     "name already exists is skipped. Returns created/skipped/errors per month.")]
-    public static async Task<object> CreatePlanYearInAdo(
+    public static async Task<object> CreatePlanYear(
     [Description("Year, e.g. 2026")] int year,
     [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
     IHolidayReader holidays,
@@ -125,10 +129,38 @@ public static class PlanTools
         };
     }
 
+    [McpServerTool, Description(
+        "Loads/updates the official company holidays for a given year into the store used " +
+        "by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has " +
+        "an ISO date (yyyy-MM-dd) and a display name."
+        )]
+    public static async Task<object> LoadHolidayForYear(
+        [Description("Year, e.g. 2026")] int year,
+        [Description("The holidays to load for that year")] HolidayInput[] holidays,
+        IHolidayWriter writer,
+        CancellationToken ct = default)
+    {
+        if (holidays is null || holidays.Length == 0)
+            throw new ArgumentException("Provide at least one holiday.");
+
+        var parsed = holidays
+            .Select(h => new Holiday(ParseDate(h.Date, nameof(h.Date)), h.Name))
+        .ToList();
+
+        await writer.WriteAsync(year, parsed, ct);
+
+        return new
+        {
+            year,
+            count = parsed.Count,
+            holidays = parsed.Select(h => new { date = Iso(h.Date), name = h.Name })
+        };
+    }
+
     private static IReadOnlyList<string> TagsFor(int year, int month)
     {
         if (!IsBusySeason(month))
-            return new[] { $"{year}.{month:D2}" };
+            return [$"{year}.{month:D2}"];
         var next = NextProdMonth(month);
         return [$"{year}.{month:D2}_QED", $"{year}.{next:D2}"];
     }

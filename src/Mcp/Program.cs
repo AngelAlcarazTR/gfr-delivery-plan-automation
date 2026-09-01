@@ -29,6 +29,7 @@ builder.Services.AddSingleton(sp =>
     return new BlobHolidayReaderOptions(ConnectionString: cfg["HolidaysStorage"] ?? "");
 });
 builder.Services.AddTransient<IHolidayReader, BlobHolidayReader>();
+builder.Services.AddTransient<IHolidayWriter, BlobHolidayWriter>();
 
 builder.Services.AddTransient<IDeliveryPlanCatalog>(sp =>
     new AdoDeliveryPlanCatalog(

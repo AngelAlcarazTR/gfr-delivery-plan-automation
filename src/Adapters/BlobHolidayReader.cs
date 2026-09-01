@@ -31,9 +31,12 @@ public sealed class BlobHolidayReader(BlobHolidayReaderOptions options) : IHolid
 
             // Parse each "yyyy-MM-dd" into a LocalDate; skip anything malformed.
             var dates = new List<LocalDate>();
-            foreach (var s in dto.Holidays)
+            foreach (var el in dto.Holidays)
             {
-                if (TryParseIso(s, out var d))
+                var s = el.ValueKind == JsonValueKind.Object
+                    ? el.GetProperty("date").GetString()
+                    : el.GetString();
+                if (s is not null && TryParseIso(s, out var d))
                     dates.Add(d);
             }
 
@@ -46,7 +49,7 @@ public sealed class BlobHolidayReader(BlobHolidayReaderOptions options) : IHolid
         }
     }
 
-    private string BlobName(int year) => $"holidays-{year}.json";
+    private static string BlobName(int year) => $"holidays-{year}.json";
 
     private static bool TryParseIso(string s, out LocalDate date)
     {
@@ -61,7 +64,7 @@ public sealed class BlobHolidayReader(BlobHolidayReaderOptions options) : IHolid
     }
 
     // The JSON shape stored in the blob.
-    private sealed record HolidayFileDto(int Year, IReadOnlyList<string> Holidays);
+    private sealed record HolidayFileDto(int Year, IReadOnlyList<JsonElement> Holidays);
 }
 
 // Config for the reader. ConnectionString comes from app settings
