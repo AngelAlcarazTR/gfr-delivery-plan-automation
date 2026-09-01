@@ -10,24 +10,31 @@ namespace Core.Application;
 //
 // Deterministic backbone (business-day offsets, weekends only — NOT holiday-shifted,
 // because the real markers stay on their weekday even when a holiday lands on them):
-//   Start Regression = QED
+//   Start Regression = QED                                              (Prod only)
 //   QA Cut-off       = QED - 1 business day   (the Friday before the QED Monday)
 //   End Development   = QED - 4 business days   (the Tuesday of the prior week)
 //   End Regression    = (Monday of the Release week) - 3 business days   (Prod only)
 //   Release          = the anchor                                        (Prod only)
 //
+// The regression window (Start Regression -> End Regression -> Release) only exists
+// for production months. Busy-season QedOnly plans stop at the QED deploy, so they
+// emit no StartReg/EndReg/Release (that matches the real ADO plans exactly).
+//
 // Start Development is a suggested/editable marker: weekends only (NOT holiday-shifted).
 // The real GFR plans place StartDev on its nominal weekday even when a US holiday lands
 // on it (e.g. Feb 2026 StartDev = MLK Day, Jun 2026 StartDev = Memorial Day), so no
-// roll-forward is applied.
+// roll-forward is applied. Occasionally the planners nudge StartDev OFF a holiday instead
+// (e.g. Mar 2026 nominal = President's Day Feb 16, real plan = Feb 19) — an editable,
+// non-derivable choice, which is why StartDev is a suggestion and carries a wider tolerance.
 //   Prod    -> (Monday of the Release week) - 25 business days.
 //              The Release is the anchor and everything derives from it. Anchoring on the
 //              week's Monday (not the raw, possibly holiday-rolled Release) keeps Tuesday
 //              releases (May/Oct) aligned and naturally handles December's wider
 //              QED<->Release gap with no special case. On normal months this equals QED-15.
 //   QedOnly -> QED - 20 business days (busy-season months have no production Release).
-// The 2 residual misses (Apr-2025 Holy Week pull-in, Jun-2026 compressed cycle) are human
-// planning adjustments, not calendar-derivable (the same months are on-rule in the other year).
+// The residual StartDev misses (e.g. Apr-2025 Holy Week pull-in, Jun-2026 compressed cycle,
+// Mar-2026 President's Day nudge) are human planning adjustments, not calendar-derivable, and
+// stay within tolerance; every deterministic marker (QED/QaCutoff/EndDev/EndReg/Release) is exact.
 public static class ReleaseAnchoredCalculator
 {
     private const int QaCutoffOffset = -1;
@@ -62,7 +69,6 @@ public static class ReleaseAnchoredCalculator
             qed = anchor;
         }
 
-        var startReg = qed;
         var qaCutoff = BusinessDayCalculator.AddBusinessDays(qed, QaCutoffOffset);
         var endDev = BusinessDayCalculator.AddBusinessDays(qed, EndDevOffset);
 
@@ -78,12 +84,15 @@ public static class ReleaseAnchoredCalculator
             new(Milestone.EndDev, endDev, false, null),
             new(Milestone.QaCutoff, qaCutoff, false, null),
             new(Milestone.QedDeploy, qed, false, null),
-            new(Milestone.StartReg, startReg, false, null),
         };
 
+        // Regression window (Start Regression = QED, then End Regression, then Release)
+        // exists ONLY for production months. Busy-season QedOnly plans have no Release,
+        // so the plan ends at the QED deploy — no StartReg/EndReg/Release is emitted.
         if (isProd)
         {
             var endReg = BusinessDayCalculator.AddBusinessDays(releaseWeekMonday, EndRegOffset);
+            events.Add(new PlanEvent(Milestone.StartReg, qed, false, null));
             events.Add(new PlanEvent(Milestone.EndReg, endReg, false, null));
             events.Add(new PlanEvent(Milestone.Release, release!.Value, false, null));
         }

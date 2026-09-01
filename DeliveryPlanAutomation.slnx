@@ -3,6 +3,7 @@
     <Project Path="src/Adapters/Adapters.csproj" Id="226e99ab-7c0e-4129-9ace-b14a74057d39" />
     <Project Path="src/Core/Core.csproj" />
     <Project Path="src/Functions/Functions.csproj" Id="847c5632-e5e3-439f-94a9-3c82f5ec79a9" />
+    <Project Path="src/Mcp/Mcp.csproj" Id="c2697db9-7c91-4219-9d43-552019cb0433" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Core.Tests/Core.Tests.csproj" />
