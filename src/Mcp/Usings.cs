@@ -1,9 +1,9 @@
-﻿global using Microsoft.Extensions.DependencyInjection;
-global using Microsoft.Extensions.Hosting;
-global using Microsoft.Extensions.Logging;
-global using System.ComponentModel;
-global using System.Globalization;
-global using Core.Application;
+﻿global using Core.Application;
 global using Core.Domain;
+global using Microsoft.Extensions.DependencyInjection;
 global using ModelContextProtocol.Server;
 global using NodaTime;
+global using System.ComponentModel;
+global using System.Globalization;
+global using Core.Ports;
+global using Adapters;

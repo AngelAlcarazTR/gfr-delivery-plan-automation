@@ -60,6 +60,86 @@ public static class PlanTools
         };
     }
 
+
+    [McpServerTool, Description(
+    "Creates GFR delivery plans in Azure DevOps from single-anchor months. Uses the same " +
+    "engine as compute_plan_year, then WRITES each plan to ADO. Idempotent: a plan whose " +
+    "name already exists is skipped. Returns created/skipped/errors per month.")]
+    public static async Task<object> CreatePlanYearInAdo(
+    [Description("Year, e.g. 2026")] int year,
+    [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
+    IHolidayReader holidays,
+    IDeliveryPlanCatalog catalog,
+    IDeliveryPlanWriter writer,
+    CancellationToken ct = default)
+    {
+        if (anchors is null || anchors.Length == 0)
+            throw new ArgumentException("Provide at least one month anchor.");
+
+        var holidayDates = await holidays.GetHolidaysAsync(year, ct);
+        var calendar = holidayDates is not null
+            ? new HolidayCalendar(holidayDates)
+            : CompanyHolidays.Calendar(year, year + 1);
+
+        var existing = await catalog.FindPlansAsync("[GFR]", ct);
+        var existingNames = existing.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var created = new List<object>();
+        var skipped = new List<object>();
+        var errors = new List<object>();
+
+        foreach (var a in anchors)
+        {
+            try
+            {
+                var schedule = BuildSchedule(year, a);
+                var plan = DeliveryPlanJob.BuildPlan(schedule, calendar);
+
+                if (existingNames.Contains(schedule.PlanName))
+                {
+                    skipped.Add(new { month = a.Month, planName = schedule.PlanName, reason = "already exists" });
+                    continue;
+                }
+
+                var tags = TagsFor(year, a.Month);
+                var options = new PlanPublishOptions(schedule.PlanName, tags);
+
+                var refCreated = await writer.CreateAsync(plan, options, ct);
+                created.Add(new { month = a.Month, planId = refCreated.Id, planName = refCreated.Name, tags });
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new { month = a.Month, reason = ex.Message });
+            }
+        }
+
+        return new
+        {
+            year,
+            createdCount = created.Count,
+            skippedCount = skipped.Count,
+            errorCount = errors.Count,
+            created,
+            skipped,
+            errors
+        };
+    }
+
+    private static IReadOnlyList<string> TagsFor(int year, int month)
+    {
+        if (!IsBusySeason(month))
+            return new[] { $"{year}.{month:D2}" };
+        var next = NextProdMonth(month);
+        return [$"{year}.{month:D2}_QED", $"{year}.{next:D2}"];
+    }
+
+    private static int NextProdMonth(int month)
+    {
+        var m = month + 1;
+        while (m <= 12 && IsBusySeason(m)) m++;
+        return m;
+    }
+
     private static ReleaseSchedule BuildSchedule(int year, MonthAnchor a)
     {
         if (a.Month is < 1 or > 12)
