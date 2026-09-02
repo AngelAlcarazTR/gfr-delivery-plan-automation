@@ -1,28 +1,70 @@
-﻿namespace Mcp;
+﻿using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Graph.Models;
+using Microsoft.VisualBasic;
+using System.Numerics;
 
+namespace Mcp;
+
+/// <summary>
+/// Represents a month and its associated anchor date for GFR delivery planning.
+/// </summary>
+/// <param name="Month">The month (1-12) for which the anchor date is specified.</param>
+/// <param name="Anchor">The anchor date in ISO yyyy-MM-dd format (Release for Prod months, QED for busy season).</param>
 public record MonthAnchor(
     [property: Description("Month 1-12")] int Month,
     [property: Description("Anchor date ISO yyyy-MM-dd (Release for Prod months, QED for busy season)")] string Anchor);
 
+/// <summary>
+/// Represents a holiday input with a date and display name for GFR delivery planning.
+/// </summary>
+/// <param name="Date">The holiday date in ISO yyyy-MM-dd format.</param>
+/// <param name="Name">The display name of the holiday, e.g. 'New Year's Day'.</param>
 public record HolidayInput(
     [property: Description("Holiday date ISO yyyy-MM-dd")] string Date,
     [property: Description("Display name, e.g. 'New Year's Day'")] string Name);
 
+/// <summary>
+/// Provides tools for computing and creating GFR delivery plans, as well as managing company holidays.
+/// </summary>
 [McpServerToolType]
 public static class PlanTools
 {
     private static readonly int[] BusySeasonMonths = [1, 2, 3, 9];
     private static bool IsBusySeason(int month) => Array.IndexOf(BusySeasonMonths, month) >= 0;
+    private static IEnumerable<int> MarkerYears(DeliveryPlan plan)
+       => plan.Events.Select(e => e.Date.Year).Distinct();
 
+    private static async Task<IReadOnlyList<HolidayConflict>> WarningsFor(
+        DeliveryPlan plan, IHolidayCalendarSource source, CancellationToken ct)
+    {
+        var calendars = await source.GetCalendarAsync(MarkerYears(plan), ct);
+        return HolidayConflictDetector.Detect(plan.Events, calendars);
+    }
+
+    /// <summary>
+    /// Computes GFR delivery plans for one or more months of a year, each from a single calendar anchor. 
+    /// The plan kind is inferred from the month: busy-season months (Jan, Feb, Mar, Sep) are QED-only and the anchor is the QED deploy date; 
+    /// all other months are Prod and the anchor is the production Release date. Returns each plan's name and milestones, plus a per-month error list for any anchors that failed.
+    /// </summary>
+    /// <param name="year">The year for which to compute the delivery plans.</param>
+    /// <param name="anchors">An array of MonthAnchor objects representing the months and their anchor dates.</param>
+    /// <param name="holidaySource">An IHolidayCalendarSource instance to retrieve holiday dates.</param>
+    /// <param name="ct">A CancellationToken to observe while waiting for the task to complete.</param>
+    /// <returns>An object containing the year, count of successful plans, the plans themselves, and any errors encountered.</returns>
+    /// <exception cref="ArgumentException">Thrown when no month anchors are provided.</exception>
     [McpServerTool, Description(
         "Computes GFR delivery plans for one or more months of a year, each from a single " +
         "calendar anchor. The plan kind is inferred from the month: busy-season months " +
         "(Jan, Feb, Mar, Sep) are QED-only and the anchor is the QED deploy date; all other " +
         "months are Prod and the anchor is the production Release date. Returns each plan's " +
-        "name and milestones, plus a per-month error list for any anchors that failed.")]
-    public static object ComputePlanYear(
+        "name and milestones, plus a per-month error list for any anchors that failed. Each plan includes " +
+        "'warningsCount' and 'warningsSummary'; whenever warningsCount > 0 you MUST report these holiday " +
+        "conflicts to the user. They are informational only — the schedule is never shifted.")]
+    public static async Task<object> ComputePlanYear(
         [Description("Year, e.g. 2026")] int year,
-        [Description("One or more months with their anchor date")] MonthAnchor[] anchors)
+        [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
+        IHolidayCalendarSource holidaySource,
+        CancellationToken ct = default)
     {
         if (anchors is null || anchors.Length == 0)
             throw new ArgumentException("Provide at least one month anchor.");
@@ -41,12 +83,30 @@ public static class PlanTools
                     .Select(e => new { label = e.Label.ToString(), date = Iso(e.Date) })
                     .ToList();
 
+                var conflicts = await WarningsFor(plan, holidaySource, ct);
+
+                var warnings = conflicts.Select(c => new
+                {
+                    marker = c.Marker.ToString(),
+                    date = Iso(c.Date),
+                    country = c.Country,
+                    region = c.Region,
+                    holiday = c.HolidayName
+                }).ToList();
+
+                var warningsSummary = conflicts
+                    .Select(c => $"{c.Marker} {Iso(c.Date)} falls on a public holiday in {c.Country}-{c.Region}: {c.HolidayName}")
+                    .ToList();
+
                 plans.Add(new
                 {
                     month = a.Month,
                     kind = schedule.Kind.ToString(),
                     planName = schedule.PlanName,
-                    markers
+                    markers,
+                    warningsCount = warnings.Count,
+                    warnings,
+                    warningsSummary
                 });
             }
             catch (Exception ex)
@@ -64,7 +124,19 @@ public static class PlanTools
         };
     }
 
-
+    /// <summary>
+    /// Creates GFR delivery plans in Azure DevOps from single-anchor months. Uses the same engine as compute_plan_year, then WRITES each plan to ADO. 
+    /// Idempotent: a plan whose name already exists is skipped. Returns created/skipped/errors per month.
+    /// </summary>
+    /// <param name="year">The year for which to create the delivery plans.</param>
+    /// <param name="anchors">An array of MonthAnchor objects representing the months and their anchor dates.</param>
+    /// <param name="holidays">An IHolidayReader instance to retrieve holiday dates.</param>
+    /// <param name="catalog">An IDeliveryPlanCatalog instance to check for existing plans.</param>
+    /// <param name="writer">An IDeliveryPlanWriter instance to write the delivery plans to Azure DevOps.</param>
+    /// <param name="holidaySource">An IHolidayCalendarSource instance to retrieve holiday calendar information.</param>
+    /// <param name="ct">A token to monitor for cancellation requests.</param>
+    /// <returns>An object containing the year, counts of created, skipped, and errored plans, and the details of each.</returns>
+    /// <exception cref="ArgumentException">Thrown if no month anchors are provided.</exception>
     [McpServerTool, Description(
     "Creates GFR delivery plans in Azure DevOps from single-anchor months. Uses the same " +
     "engine as compute_plan_year, then WRITES each plan to ADO. Idempotent: a plan whose " +
@@ -75,6 +147,7 @@ public static class PlanTools
     IHolidayReader holidays,
     IDeliveryPlanCatalog catalog,
     IDeliveryPlanWriter writer,
+    IHolidayCalendarSource holidaySource,
     CancellationToken ct = default)
     {
         if (anchors is null || anchors.Length == 0)
@@ -98,6 +171,7 @@ public static class PlanTools
             {
                 var schedule = BuildSchedule(year, a);
                 var plan = DeliveryPlanJob.BuildPlan(schedule, calendar);
+                var warnings = await WarningsFor(plan, holidaySource, ct);
 
                 if (existingNames.Contains(schedule.PlanName))
                 {
@@ -109,7 +183,7 @@ public static class PlanTools
                 var options = new PlanPublishOptions(schedule.PlanName, tags);
 
                 var refCreated = await writer.CreateAsync(plan, options, ct);
-                created.Add(new { month = a.Month, planId = refCreated.Id, planName = refCreated.Name, tags });
+                created.Add(new { month = a.Month, planId = refCreated.Id, planName = refCreated.Name, tags, warnings });
             }
             catch (Exception ex)
             {
@@ -129,6 +203,17 @@ public static class PlanTools
         };
     }
 
+    /// <summary>
+    /// Loads/updates the official company holidays for a given year into the store used by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has an ISO date (yyyy-MM-dd) and a display name.
+    /// </summary>
+    /// <param name="year">The year for which to load holidays, e.g. 2026</param>
+    /// <param name="holidays">The holidays to load for that year</param>
+    /// <param name="writer">The holiday writer to use</param>
+    /// <param name="country">Optional ISO country code, e.g. 'MX','US','IN'. Omit for the global file.</param>
+    /// <param name="region">Optional region/state code, e.g. 'KA','TG' for India.</param>
+    /// <param name="ct">Cancellation token</param>
+    /// <returns>The result of the holiday load operation</returns>
+    /// <exception cref="ArgumentException">Thrown when no holidays are provided</exception>
     [McpServerTool, Description(
         "Loads/updates the official company holidays for a given year into the store used " +
         "by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has " +
@@ -138,6 +223,8 @@ public static class PlanTools
         [Description("Year, e.g. 2026")] int year,
         [Description("The holidays to load for that year")] HolidayInput[] holidays,
         IHolidayWriter writer,
+        [Description("Optional ISO country code, e.g. 'MX','US','IN'. Omit for the global file.")] string? country = null,
+        [Description("Optional region/state code, e.g. 'KA','TG' for India.")] string? region = null,
         CancellationToken ct = default)
     {
         if (holidays is null || holidays.Length == 0)
@@ -145,13 +232,15 @@ public static class PlanTools
 
         var parsed = holidays
             .Select(h => new Holiday(ParseDate(h.Date, nameof(h.Date)), h.Name))
-        .ToList();
+            .ToList();
 
-        await writer.WriteAsync(year, parsed, ct);
+        await writer.WriteAsync(year, country, region!, parsed, ct);
 
         return new
         {
             year,
+            country,
+            region,
             count = parsed.Count,
             holidays = parsed.Select(h => new { date = Iso(h.Date), name = h.Name })
         };
