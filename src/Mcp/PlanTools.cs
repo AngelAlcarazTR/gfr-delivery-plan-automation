@@ -12,7 +12,18 @@ namespace Mcp;
 /// <param name="Anchor">The anchor date in ISO yyyy-MM-dd format (Release for Prod months, QED for busy season).</param>
 public record MonthAnchor(
     [property: Description("Month 1-12")] int Month,
-    [property: Description("Anchor date ISO yyyy-MM-dd (Release for Prod months, QED for busy season)")] string Anchor);
+    [property: Description("Anchor date ISO yyyy-MM-dd (Release for Prod months, QED for busy season)")] string Anchor,
+    [property: Description("Optional manual overrides applied AFTER the deterministic engine, e.g. to nudge a milestone off a holiday")] MarkerOverride[]? Overrides = null);
+
+/// <summary>
+/// Represents a manual override that moves a single plan milestone to a specific date,
+/// applied after the deterministic engine. Used to nudge a milestone off a holiday.
+/// </summary>
+/// <param name="Marker">The milestone to move: StartDev, EndDev, QaCutoff, QedDeploy, StartReg, EndReg, Release.</param>
+/// <param name="Date">The new date in ISO yyyy-MM-dd format.</param>
+public record MarkerOverride(
+    [property: Description("Marker to move: StartDev, EndDev, QaCutoff, QedDeploy, StartReg, EndReg, Release")] string Marker,
+    [property: Description("New date ISO yyyy-MM-dd")] string Date);
 
 /// <summary>
 /// Represents a holiday input with a date and display name for GFR delivery planning.
@@ -56,7 +67,10 @@ public static class PlanTools
         "Computes GFR delivery plans for one or more months of a year, each from a single " +
         "calendar anchor. The plan kind is inferred from the month: busy-season months " +
         "(Jan, Feb, Mar, Sep) are QED-only and the anchor is the QED deploy date; all other " +
-        "months are Prod and the anchor is the production Release date. Returns each plan's " +
+        "months are Prod and the anchor is the production Release date. Each anchor accepts " +
+        "optional 'overrides' to manually move specific markers off a holiday; overridden markers " +
+        "come back with adjusted=true and originalDate. Preview overrides here before create_plan_year " +
+        "writes them to ADO. Returns each plan's " +
         "name and milestones, plus a per-month error list for any anchors that failed. Each plan includes " +
         "'warningsCount' and 'warningsSummary'; whenever warningsCount > 0 you MUST report these holiday " +
         "conflicts to the user. They are informational only — the schedule is never shifted.")]
@@ -78,9 +92,16 @@ public static class PlanTools
             {
                 var schedule = BuildSchedule(year, a);
                 var plan = DeliveryPlanJob.BuildPlan(schedule);
+                plan = ApplyOverrides(plan, a.Overrides);
 
                 var markers = plan.Events
-                    .Select(e => new { label = e.Label.ToString(), date = Iso(e.Date) })
+                    .Select(e => new
+                    {
+                        label = e.Label.ToString(),
+                        date = Iso(e.Date),
+                        adjusted = e.Adjusted,
+                        originalDate = e.OriginalDate is { } od ? Iso(od) : null
+                    })
                     .ToList();
 
                 var conflicts = await WarningsFor(plan, holidaySource, ct);
@@ -139,8 +160,10 @@ public static class PlanTools
     /// <exception cref="ArgumentException">Thrown if no month anchors are provided.</exception>
     [McpServerTool, Description(
     "Creates GFR delivery plans in Azure DevOps from single-anchor months. Uses the same " +
-    "engine as compute_plan_year, then WRITES each plan to ADO. Idempotent: a plan whose " +
-    "name already exists is skipped. Returns created/skipped/errors per month.")]
+    "engine as compute_plan_year, then WRITES each plan to ADO. Each anchor accepts optional " +
+    "'overrides' to manually move specific markers before writing (preview them first with " +
+    "compute_plan_year). Idempotent: a plan whose name already exists is skipped. Returns " +
+    "created/skipped/errors per month.")]
     public static async Task<object> CreatePlanYear(
     [Description("Year, e.g. 2026")] int year,
     [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
@@ -171,6 +194,7 @@ public static class PlanTools
             {
                 var schedule = BuildSchedule(year, a);
                 var plan = DeliveryPlanJob.BuildPlan(schedule, calendar);
+                plan = ApplyOverrides(plan, a.Overrides);
                 var warnings = await WarningsFor(plan, holidaySource, ct);
 
                 if (existingNames.Contains(schedule.PlanName))
@@ -259,6 +283,30 @@ public static class PlanTools
         var m = month + 1;
         while (m <= 12 && IsBusySeason(m)) m++;
         return m;
+    }
+
+    private static DeliveryPlan ApplyOverrides(DeliveryPlan plan, MarkerOverride[]? overrides)
+    {
+        if (overrides is null || overrides.Length == 0)
+            return plan;
+
+        var byLabel = plan.Events.ToDictionary(e => e.Label);
+        foreach (var o in overrides)
+        {
+            if (!Enum.TryParse<Milestone>(o.Marker, ignoreCase: true, out var label) || !byLabel.ContainsKey(label))
+                throw new ArgumentException($"Unknown marker '{o.Marker}' for this plan.");
+
+            var current = byLabel[label];
+            byLabel[label] = current with
+            {
+                Date = ParseDate(o.Date, nameof(o.Date)),
+                Adjusted = true,
+                OriginalDate = current.OriginalDate ?? current.Date
+            };
+        }
+
+        var newEvents = plan.Events.Select(e => byLabel[e.Label]).ToList();
+        return plan with { Events = newEvents };
     }
 
     private static ReleaseSchedule BuildSchedule(int year, MonthAnchor a)
