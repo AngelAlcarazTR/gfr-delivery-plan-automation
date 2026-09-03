@@ -1,9 +1,4 @@
-﻿using Microsoft.AspNetCore.Http.HttpResults;
-using Microsoft.Graph.Models;
-using Microsoft.VisualBasic;
-using System.Numerics;
-
-namespace Mcp;
+﻿namespace Mcp;
 
 /// <summary>
 /// Represents a month and its associated anchor date for GFR delivery planning.
