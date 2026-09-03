@@ -16,4 +16,17 @@ public interface IDeliveryPlanWriter
     // Deletes a plan by its backing-system id. Kept here so the same port
     // covers the full create/delete test loop we validated by hand.
     Task DeleteAsync(string planId, CancellationToken cancellationToken = default);
+
+    // Moves a SINGLE marker of an existing plan to a new date, in place, leaving
+    // every other marker and setting untouched. Returns whether the marker was
+    // found and its previous date (for reporting/confirmation).
+    Task<MarkerUpdateResult> UpdateMarkerDateAsync(
+        string planId,
+        Milestone marker,
+        LocalDate newDate,
+        CancellationToken cancellationToken = default);
 }
+
+// Outcome of moving a single marker: whether a matching marker existed, its
+// previous date, and how many markers were changed (normally 0 or 1).
+public sealed record MarkerUpdateResult(bool Found, LocalDate? PreviousDate, int UpdatedCount);

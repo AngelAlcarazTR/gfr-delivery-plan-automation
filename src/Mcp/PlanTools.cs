@@ -325,6 +325,107 @@ public static class PlanTools
     }
 
     /// <summary>
+    /// Moves a single milestone marker of an EXISTING GFR delivery plan in Azure DevOps to a new date,
+    /// in place, leaving every other marker and setting untouched. Then re-reads the plan and returns
+    /// its markers plus fresh holiday / chronological-order warnings. Typically used to nudge a marker
+    /// off a public holiday flagged by get_current_plan / compute_plan_year.
+    /// </summary>
+    /// <param name="writer">An IDeliveryPlanWriter instance to persist the marker change to ADO.</param>
+    /// <param name="reader">An IDeliveryPlanReader instance to re-read the plan after the update.</param>
+    /// <param name="holidaySource">An IHolidayCalendarSource instance to detect holiday conflicts.</param>
+    /// <param name="planId">The ADO delivery plan id (GUID) to update, e.g. from get_current_plan.</param>
+    /// <param name="marker">The milestone to move: StartDev, EndDev, QaCutoff, QedDeploy, StartReg, EndReg, Release.</param>
+    /// <param name="date">The new date in ISO yyyy-MM-dd format.</param>
+    /// <param name="ct">A CancellationToken to observe while waiting for the task to complete.</param>
+    /// <returns>An object describing the update result and the re-read plan, or updated=false when the marker is not found.</returns>
+    /// <exception cref="ArgumentException">Thrown when planId is empty or the marker name is unknown.</exception>
+    [McpServerTool, Description(
+        "Moves a SINGLE milestone marker of an EXISTING GFR delivery plan in Azure DevOps to a " +
+        "new date, in place — every other marker and setting is preserved. Use it to nudge a " +
+        "marker off a public holiday flagged by get_current_plan or compute_plan_year. Pass the " +
+        "plan id (planId) from get_current_plan, the marker name (StartDev, EndDev, QaCutoff, " +
+        "QedDeploy, StartReg, EndReg, Release) and the new ISO date. After writing, it re-reads " +
+        "the plan and returns its markers plus fresh 'warnings' (holiday conflicts) and " +
+        "'orderWarnings' (markers now out of chronological order) so you can confirm the result. " +
+        "Returns updated=false when the marker is not present on the plan. This WRITES to ADO — " +
+        "preview the target date with the user first.")]
+    public static async Task<object> UpdatePlanMarker(
+        IDeliveryPlanWriter writer,
+        IDeliveryPlanReader reader,
+        IHolidayCalendarSource holidaySource,
+        [Description("ADO delivery plan id (GUID) to update, e.g. from get_current_plan")] string planId,
+        [Description("Marker to move: StartDev, EndDev, QaCutoff, QedDeploy, StartReg, EndReg, Release")] string marker,
+        [Description("New date ISO yyyy-MM-dd")] string date,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(planId))
+            throw new ArgumentException("Provide the plan id (planId).");
+
+        if (!Enum.TryParse<Milestone>(marker, ignoreCase: true, out var milestone))
+            throw new ArgumentException(
+                $"Unknown marker '{marker}'. Valid: StartDev, EndDev, QaCutoff, QedDeploy, StartReg, EndReg, Release.");
+
+        var newDate = ParseDate(date, nameof(date));
+
+        var result = await writer.UpdateMarkerDateAsync(planId, milestone, newDate, ct);
+
+        if (!result.Found)
+            return new
+            {
+                updated = false,
+                planId,
+                marker = milestone.ToString(),
+                reason = "Marker not found on this plan."
+            };
+
+        // Re-read the persisted plan so the caller sees the real state + fresh warnings.
+        var plan = await reader.GetPlanAsync(planId, ct);
+
+        var markers = plan.Events
+            .OrderBy(e => e.Date)
+            .Select(e => new
+            {
+                label = e.Label.ToString(),
+                date = Iso(e.Date),
+                adjusted = e.Adjusted,
+                originalDate = e.OriginalDate is { } od ? Iso(od) : null
+            })
+            .ToList();
+
+        var conflicts = await WarningsFor(plan, holidaySource, ct);
+
+        var warnings = conflicts.Select(c => new
+        {
+            marker = c.Marker.ToString(),
+            date = Iso(c.Date),
+            country = c.Country,
+            region = c.Region,
+            holiday = c.HolidayName
+        }).ToList();
+
+        var warningsSummary = conflicts
+            .Select(c => $"{c.Marker} {Iso(c.Date)} falls on a public holiday in {c.Country}-{c.Region}: {c.HolidayName}")
+            .ToList();
+
+        var orderWarnings = OrderWarnings(plan);
+
+        return new
+        {
+            updated = true,
+            planId,
+            planName = plan.Sprint.SprintId,
+            marker = milestone.ToString(),
+            previousDate = result.PreviousDate is { } p ? Iso(p) : null,
+            newDate = Iso(newDate),
+            markers,
+            warningsCount = warnings.Count,
+            warnings,
+            warningsSummary,
+            orderWarnings
+        };
+    }
+
+    /// <summary>
     /// Loads/updates the official company holidays for a given year into the store used by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has an ISO date (yyyy-MM-dd) and a display name.
     /// </summary>
     /// <param name="year">The year for which to load holidays, e.g. 2026</param>
