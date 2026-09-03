@@ -73,7 +73,10 @@ public static class PlanTools
         "writes them to ADO. Returns each plan's " +
         "name and milestones, plus a per-month error list for any anchors that failed. Each plan includes " +
         "'warningsCount' and 'warningsSummary'; whenever warningsCount > 0 you MUST report these holiday " +
-        "conflicts to the user. They are informational only — the schedule is never shifted.")]
+        "conflicts to the user. They are informational only — the schedule is never shifted. " +
+        "Plans also include 'orderWarnings' when a manual override leaves milestones out of " +
+        "chronological order (e.g. QedDeploy before EndDev); report them too, but they do not " +
+        "block creation.")]
     public static async Task<object> ComputePlanYear(
         [Description("Year, e.g. 2026")] int year,
         [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
@@ -119,6 +122,8 @@ public static class PlanTools
                     .Select(c => $"{c.Marker} {Iso(c.Date)} falls on a public holiday in {c.Country}-{c.Region}: {c.HolidayName}")
                     .ToList();
 
+                var orderWarnings = OrderWarnings(plan);
+
                 plans.Add(new
                 {
                     month = a.Month,
@@ -127,7 +132,8 @@ public static class PlanTools
                     markers,
                     warningsCount = warnings.Count,
                     warnings,
-                    warningsSummary
+                    warningsSummary,
+                    orderWarnings
                 });
             }
             catch (Exception ex)
@@ -163,7 +169,8 @@ public static class PlanTools
     "engine as compute_plan_year, then WRITES each plan to ADO. Each anchor accepts optional " +
     "'overrides' to manually move specific markers before writing (preview them first with " +
     "compute_plan_year). Idempotent: a plan whose name already exists is skipped. Returns " +
-    "created/skipped/errors per month.")]
+    "created/skipped/errors per month. Each created plan includes 'warnings' (holiday conflicts) " +
+    "and 'orderWarnings' (milestones out of chronological order after an override); both are advisory.")]
     public static async Task<object> CreatePlanYear(
     [Description("Year, e.g. 2026")] int year,
     [Description("One or more months with their anchor date")] MonthAnchor[] anchors,
@@ -196,6 +203,7 @@ public static class PlanTools
                 var plan = DeliveryPlanJob.BuildPlan(schedule, calendar);
                 plan = ApplyOverrides(plan, a.Overrides);
                 var warnings = await WarningsFor(plan, holidaySource, ct);
+                var orderWarnings = OrderWarnings(plan);
 
                 if (existingNames.Contains(schedule.PlanName))
                 {
@@ -207,7 +215,7 @@ public static class PlanTools
                 var options = new PlanPublishOptions(schedule.PlanName, tags);
 
                 var refCreated = await writer.CreateAsync(plan, options, ct);
-                created.Add(new { month = a.Month, planId = refCreated.Id, planName = refCreated.Name, tags, warnings });
+                created.Add(new { month = a.Month, planId = refCreated.Id, planName = refCreated.Name, tags, warnings, orderWarnings });
             }
             catch (Exception ex)
             {
@@ -307,6 +315,20 @@ public static class PlanTools
 
         var newEvents = plan.Events.Select(e => byLabel[e.Label]).ToList();
         return plan with { Events = newEvents };
+    }
+
+    private static List<string> OrderWarnings(DeliveryPlan plan)
+    {
+        var ordered = plan.Events.OrderBy(e => (int)e.Label).ToList();
+        var result = new List<string>();
+        for (var i = 1; i < ordered.Count; i++)
+        {
+            var prev = ordered[i - 1];
+            var curr = ordered[i];
+            if (prev.Date.CompareTo(curr.Date) > 0)
+                result.Add($"{curr.Label} {Iso(curr.Date)} is before {prev.Label} {Iso(prev.Date)}");
+        }
+        return result;
     }
 
     private static ReleaseSchedule BuildSchedule(int year, MonthAnchor a)
