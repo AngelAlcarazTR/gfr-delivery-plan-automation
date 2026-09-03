@@ -37,6 +37,11 @@ builder.Services.AddTransient<IDeliveryPlanCatalog>(sp =>
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
         sp.GetRequiredService<AdoConfig>()));
 
+builder.Services.AddTransient<IDeliveryPlanReader>(sp =>
+    new AdoDeliveryPlanReader(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+        sp.GetRequiredService<AdoConfig>()));
+
 builder.Services.AddTransient<IDeliveryPlanWriter>(sp =>
     new AdoDeliveryPlanWriter(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(),

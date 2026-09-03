@@ -231,6 +231,100 @@ public static class PlanTools
     }
 
     /// <summary>
+    /// Reads the CURRENT GFR delivery plan straight from Azure DevOps and returns it as structured data
+    /// (plan name, id, owner, goal date, tags and the milestone markers). The "current" plan is chosen by
+    /// goal date (nearest goal on/after the reference date, falling back to the most recent past plan).
+    /// Reads the plan AS IT STANDS in ADO — including manual edits — it does NOT recompute it.
+    /// </summary>
+    /// <param name="catalog">An IDeliveryPlanCatalog instance to list/filter candidate plans.</param>
+    /// <param name="reader">An IDeliveryPlanReader instance to read the selected plan's markers.</param>
+    /// <param name="holidaySource">An IHolidayCalendarSource instance to detect holiday conflicts.</param>
+    /// <param name="filter">Free-text filter matching the plan name or owner. Defaults to "[GFR]".</param>
+    /// <param name="asOf">Optional reference date ISO yyyy-MM-dd. Defaults to today.</param>
+    /// <param name="ct">A CancellationToken to observe while waiting for the task to complete.</param>
+    /// <returns>An object describing the current plan, or found=false when no plan matches the filter.</returns>
+    [McpServerTool, Description(
+        "Reads the CURRENT GFR delivery plan straight from Azure DevOps and returns it as " +
+        "structured data (plan name, id, owner, goal date, tags and the milestone markers). " +
+        "The 'current' plan is chosen by goal date: the plan whose goal is the nearest date on " +
+        "or after 'asOf' (today by default), falling back to the most recent past plan. This " +
+        "reads the REAL plan as it stands in ADO — including any manual edits — it does NOT " +
+        "recompute it. Includes 'warnings' (markers landing on a public holiday) and " +
+        "'orderWarnings' (markers out of chronological order); both are advisory. Returns " +
+        "found=false when no plan matches the filter.")]
+    public static async Task<object> GetCurrentPlan(
+        IDeliveryPlanCatalog catalog,
+        IDeliveryPlanReader reader,
+        IHolidayCalendarSource holidaySource,
+        [Description("Free-text filter matching the plan name or owner, e.g. '[GFR]'. Defaults to '[GFR]'.")] string filter = "[GFR]",
+        [Description("Reference date ISO yyyy-MM-dd. The current plan is the nearest goal on/after this date. Defaults to today.")] string? asOf = null,
+        CancellationToken ct = default)
+    {
+        var today = string.IsNullOrWhiteSpace(asOf)
+            ? LocalDate.FromDateTime(DateTime.Today)
+            : ParseDate(asOf, nameof(asOf));
+
+        var matches = await catalog.FindPlansAsync(filter, ct);
+        var current = CurrentPlanSelector.Pick(matches, today);
+
+        if (current is null)
+            return new
+            {
+                found = false,
+                filter,
+                asOf = Iso(today),
+                candidateCount = matches.Count,
+                reason = "No plan with a parseable goal date matched the filter."
+            };
+
+        var plan = await reader.GetPlanAsync(current.Id, ct);
+
+        var markers = plan.Events
+            .OrderBy(e => e.Date)
+            .Select(e => new
+            {
+                label = e.Label.ToString(),
+                date = Iso(e.Date),
+                adjusted = e.Adjusted,
+                originalDate = e.OriginalDate is { } od ? Iso(od) : null
+            })
+            .ToList();
+
+        var conflicts = await WarningsFor(plan, holidaySource, ct);
+
+        var warnings = conflicts.Select(c => new
+        {
+            marker = c.Marker.ToString(),
+            date = Iso(c.Date),
+            country = c.Country,
+            region = c.Region,
+            holiday = c.HolidayName
+        }).ToList();
+
+        var warningsSummary = conflicts
+            .Select(c => $"{c.Marker} {Iso(c.Date)} falls on a public holiday in {c.Country}-{c.Region}: {c.HolidayName}")
+            .ToList();
+
+        var orderWarnings = OrderWarnings(plan);
+
+        return new
+        {
+            found = true,
+            planId = plan.PlanId ?? current.Id,
+            planName = current.Name,
+            owner = current.Owner,
+            goalDate = current.GoalDate is { } g ? Iso(g) : null,
+            asOf = Iso(today),
+            tags = plan.Tags,
+            markers,
+            warningsCount = warnings.Count,
+            warnings,
+            warningsSummary,
+            orderWarnings
+        };
+    }
+
+    /// <summary>
     /// Loads/updates the official company holidays for a given year into the store used by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has an ISO date (yyyy-MM-dd) and a display name.
     /// </summary>
     /// <param name="year">The year for which to load holidays, e.g. 2026</param>
