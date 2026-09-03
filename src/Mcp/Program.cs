@@ -30,6 +30,7 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddTransient<IHolidayReader, BlobHolidayReader>();
 builder.Services.AddTransient<IHolidayWriter, BlobHolidayWriter>();
+builder.Services.AddTransient<IHolidayCalendarSource, BlobHolidayCalendarSource>();
 
 builder.Services.AddTransient<IDeliveryPlanCatalog>(sp =>
     new AdoDeliveryPlanCatalog(

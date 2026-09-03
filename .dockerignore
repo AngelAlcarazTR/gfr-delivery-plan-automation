@@ -1,0 +1,18 @@
+# Keep the Docker build context small and reproducible.
+# Root-level entries (the az acr build packer does not expand **/ for root dirs).
+.git
+.vs
+.vscode
+bin
+obj
+node_modules
+# Nested matches for anything under src/.
+**/bin
+**/obj
+**/.git
+**/.vs
+**/.vscode
+**/node_modules
+**/*.user
+tests
+docs
