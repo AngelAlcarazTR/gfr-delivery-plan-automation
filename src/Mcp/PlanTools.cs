@@ -293,7 +293,7 @@ public static class PlanTools
         return m;
     }
 
-    private static DeliveryPlan ApplyOverrides(DeliveryPlan plan, MarkerOverride[]? overrides)
+    internal static DeliveryPlan ApplyOverrides(DeliveryPlan plan, MarkerOverride[]? overrides)
     {
         if (overrides is null || overrides.Length == 0)
             return plan;
@@ -317,7 +317,7 @@ public static class PlanTools
         return plan with { Events = newEvents };
     }
 
-    private static List<string> OrderWarnings(DeliveryPlan plan)
+    internal static List<string> OrderWarnings(DeliveryPlan plan)
     {
         var ordered = plan.Events.OrderBy(e => (int)e.Label).ToList();
         var result = new List<string>();
