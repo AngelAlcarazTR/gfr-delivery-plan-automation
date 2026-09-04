@@ -148,6 +148,111 @@ public class AdoDeliveryPlanWriter(HttpClient http, AdoConfig config) : IDeliver
         }
     }
 
+    // Surgically moves a single marker on an existing plan. Reads the plan's RAW
+    // JSON, changes only the target marker's date, and PUTs the whole document
+    // back — so revision, teams, cardSettings and even markers the domain reader
+    // does not track (e.g. "Communicate Release Plan") are preserved. Uses the
+    // same 400/403 transient retry as UpdateMarkersAsync (revision race / ACL).
+    public async Task<MarkerUpdateResult> UpdateMarkerDateAsync(
+        string planId,
+        Milestone marker,
+        LocalDate newDate,
+        CancellationToken cancellationToken = default)
+    {
+        const int maxAttempts = 6;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            // GET the current raw plan (also gives us the revision for the PUT).
+            using var getReq = new HttpRequestMessage(HttpMethod.Get, _config.PlanUrl(planId));
+            getReq.Headers.Authorization = _config.AuthHeader();
+
+            using var getRes = await _http.SendAsync(getReq, cancellationToken);
+            var getPayload = await getRes.Content.ReadAsStringAsync(cancellationToken);
+            if (!getRes.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"ADO plan read failed ({(int)getRes.StatusCode} {getRes.StatusCode}): {getPayload}");
+
+            var (updatedJson, found, previous, count) = ApplyMarkerDate(getPayload, marker, newDate);
+            if (!found)
+                return new MarkerUpdateResult(false, null, 0);
+
+            // PUT the mutated document back verbatim (revision travels inside it).
+            using var putReq = new HttpRequestMessage(HttpMethod.Put, _config.PlanUrl(planId))
+            {
+                Content = new StringContent(updatedJson, Encoding.UTF8, "application/json")
+            };
+            putReq.Headers.Authorization = _config.AuthHeader();
+
+            using var putRes = await _http.SendAsync(putReq, cancellationToken);
+            if (putRes.IsSuccessStatusCode)
+                return new MarkerUpdateResult(true, previous, count);
+
+            var putPayload = await putRes.Content.ReadAsStringAsync(cancellationToken);
+            var code = (int)putRes.StatusCode;
+
+            // 400 = revision race; 403 = ACL still settling. Both transient → retry.
+            var transient = code is 400 or 403;
+            if (!transient || attempt >= maxAttempts)
+                throw new InvalidOperationException(
+                    $"ADO marker update failed ({code} {putRes.StatusCode}) " +
+                    $"after {attempt} attempt(s): {putPayload}");
+
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        }
+    }
+
+    // Pure, network-free JSON mutation: finds the marker whose ADO label maps to
+    // the requested Milestone (tolerant match, via AdoDeliveryPlanReader.MapLabel),
+    // rewrites its date to UTC midnight, and returns the modified JSON, whether a
+    // match was found, the previous date, and how many markers changed. Every
+    // other field/marker in the document is preserved untouched.
+    public static (string Json, bool Found, LocalDate? PreviousDate, int Count) ApplyMarkerDate(
+        string planJson, Milestone marker, LocalDate newDate)
+    {
+        var root = JsonNode.Parse(planJson)!.AsObject();
+
+        if (root["properties"] is not JsonObject props ||
+            props["markers"] is not JsonArray markers)
+            return (planJson, false, null, 0);
+
+        LocalDate? previous = null;
+        var count = 0;
+
+        foreach (var node in markers)
+        {
+            if (node is not JsonObject m) continue;
+
+            var label = m["label"]?.GetValue<string>();
+            if (label is null || AdoDeliveryPlanReader.MapLabel(label) != marker)
+                continue;
+
+            if (previous is null &&
+                m["date"]?.GetValue<string>() is { Length: > 0 } raw &&
+                TryParseAdoDate(raw, out var prev))
+                previous = prev;
+
+            m["date"] = IsoUtcMidnight(newDate);
+            count++;
+        }
+
+        return count == 0
+            ? (planJson, false, null, 0)
+            : (root.ToJsonString(), true, previous, count);
+    }
+
+    private static bool TryParseAdoDate(string raw, out LocalDate date)
+    {
+        var parsed = InstantPattern.ExtendedIso.Parse(raw);
+        if (parsed.Success)
+        {
+            date = parsed.Value.InUtc().Date;
+            return true;
+        }
+        date = default;
+        return false;
+    }
+
     // ---- body construction ------------------------------------------------
 
     private object BuildBody(DeliveryPlan plan, PlanPublishOptions options, int? revision)
