@@ -67,6 +67,20 @@ builder.Services.AddTransient<IDeliveryPlanRenderer>(sp =>
         sp.GetRequiredService<EmailBranding>(),
         sp.GetRequiredService<AdoConfig>()));
 
+// Graph config (same TenantId/ClientId keys as the Functions host).
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new GraphConfig(
+        TenantId: cfg["Graph:TenantId"] ?? "",
+        ClientId: cfg["Graph:ClientId"] ?? "");
+});
+
+// Draft creator: reuses the existing Graph adapter. Auth is lazy — the browser
+// login only fires on the first create_plan_draft call, not at startup.
+builder.Services.AddTransient<IDraftCreator>(sp =>
+    new GraphDraftCreator(sp.GetRequiredService<GraphConfig>()));
+
 var app = builder.Build();
 
 app.MapMcp();

@@ -758,6 +758,163 @@ public static class PlanTools
         };
     }
 
+    [McpServerTool, Description(
+        "Creates an Outlook DRAFT e-mail (it does NOT send it) for an EXISTING GFR delivery plan, " +
+        "so it lands in the signed-in mailbox's Drafts folder for a human to review and send. " +
+        "All-in-one: reads the plan from Azure DevOps, renders the SAME branded HTML as " +
+        "get_plan_render, builds the subject ('[GFR] Delivery Plan — <Month> Release' for PROD " +
+        "plans, '<Month> QED Deployment' for busy-season plans) and creates the draft via Microsoft " +
+        "Graph. The FIRST call opens a browser for login (Mail.ReadWrite consent). Pass the plan id " +
+        "(planId) from get_current_plan or list_plans; optionally override the subject and/or the " +
+        "'today' reference date used for the countdown. Returns { planId, subject, created, bodyLength }.")]
+    public static async Task<object> CreatePlanDraft(
+        IDeliveryPlanReader reader,
+        IDeliveryPlanRenderer renderer,
+        IDraftCreator draftCreator,
+        GraphConfig graph,
+        [Description("ADO delivery plan id (GUID) to draft, e.g. from get_current_plan")] string planId,
+        [Description("Optional subject override. Omit to auto-build it from the plan's goal month/kind.")] string? subject = null,
+        [Description("Reference date ISO yyyy-MM-dd for the countdown. Defaults to today.")] string? today = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(planId))
+            throw new ArgumentException("Provide the plan id (planId).");
+
+        // Fail fast with a clear message instead of an opaque Graph auth error.
+        if (string.IsNullOrWhiteSpace(graph.TenantId) || string.IsNullOrWhiteSpace(graph.ClientId))
+            return new
+            {
+                planId,
+                created = false,
+                error = "Microsoft Graph is not configured on the MCP server: 'Graph:TenantId' " +
+                        "and/or 'Graph:ClientId' are missing. Add them to the Mcp user-secrets " +
+                        "(or environment) and restart the server, then retry."
+            };
+
+        var asOf = string.IsNullOrWhiteSpace(today)
+            ? LocalDate.FromDateTime(DateTime.Today)
+            : ParseDate(today, nameof(today));
+
+        var plan = await reader.GetPlanAsync(planId, ct);
+        var html = renderer.Render(plan, asOf);
+        var finalSubject = string.IsNullOrWhiteSpace(subject) ? BuildDraftSubject(plan) : subject;
+
+        try
+        {
+            await draftCreator.CreateDraftAsync(finalSubject, html, ct);
+        }
+        catch (Exception ex)
+        {
+            // Surface the REAL cause (e.g. interactive login not completed, consent
+            // denied) instead of the framework's generic "An error occurred invoking".
+            return new
+            {
+                planId,
+                subject = finalSubject,
+                created = false,
+                error = $"Draft creation failed: {ex.Message}",
+                hint = "The first call opens a browser to sign in and consent to Mail.ReadWrite. " +
+                       "Make sure that sign-in completed on the machine hosting the MCP server."
+            };
+        }
+
+        return new
+        {
+            planId,
+            subject = finalSubject,
+            created = true,
+            bodyLength = html.Length
+        };
+    }
+
+    [McpServerTool, Description(
+        "Exports an EXISTING GFR delivery plan as a ready-to-send Outlook e-mail FILE (.eml), " +
+        "WITHOUT Microsoft Graph, permissions or admin approval. Reads the plan from Azure DevOps, " +
+        "renders the SAME branded HTML as get_plan_render, and writes a .eml with an 'X-Unsent' " +
+        "header so double-clicking it opens Outlook in compose mode (an editable, sendable message " +
+        "in your own mailbox). Use this when create_plan_draft is blocked by tenant admin consent. " +
+        "Pass the plan id (planId); optionally set the recipient 'to', a subject override, the " +
+        "'today' reference date, and an output path. Returns { planId, subject, to, path, fileUrl, " +
+        "folder, folderUrl, bytesWritten, message }. When you report the result to the user, confirm " +
+        "the file was saved and render 'fileUrl' as a clickable markdown link (e.g. [Open .eml](fileUrl)) " +
+        "and 'folderUrl' as an 'Open folder' link, instead of showing the raw path as plain text.")]
+    public static async Task<object> ExportPlanEmail(
+        IDeliveryPlanReader reader,
+        IDeliveryPlanRenderer renderer,
+        [Description("ADO delivery plan id (GUID) to export, e.g. from get_current_plan")] string planId,
+        [Description("Optional recipient e-mail for the To: line, e.g. 'you@thomsonreuters.com'. Omit to leave it blank.")] string? to = null,
+        [Description("Optional subject override. Omit to auto-build it from the plan's goal month/kind.")] string? subject = null,
+        [Description("Reference date ISO yyyy-MM-dd for the countdown. Defaults to today.")] string? today = null,
+        [Description("Optional full output path for the .eml. Omit to save into the user's Downloads folder.")] string? outputPath = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(planId))
+            throw new ArgumentException("Provide the plan id (planId).");
+
+        var asOf = string.IsNullOrWhiteSpace(today)
+            ? LocalDate.FromDateTime(DateTime.Today)
+            : ParseDate(today, nameof(today));
+
+        var plan = await reader.GetPlanAsync(planId, ct);
+        var html = renderer.Render(plan, asOf);
+        var finalSubject = string.IsNullOrWhiteSpace(subject) ? BuildDraftSubject(plan) : subject;
+
+        var eml = EmlDraftWriter.BuildEml(from: null, to: to, subject: finalSubject, htmlBody: html, date: DateTimeOffset.Now);
+
+        var path = string.IsNullOrWhiteSpace(outputPath)
+            ? Path.Combine(DefaultExportDir(), SafeFileName(finalSubject) + ".eml")
+            : outputPath;
+
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        await File.WriteAllTextAsync(path, eml, new System.Text.UTF8Encoding(false), ct);
+
+        var fullPath = Path.GetFullPath(path);
+        var folder = Path.GetDirectoryName(fullPath) ?? "";
+
+        return new
+        {
+            planId,
+            subject = finalSubject,
+            to,
+            path = fullPath,
+            // file:// URIs the client can render as clickable links (opens the .eml / its folder).
+            fileUrl = new Uri(fullPath).AbsoluteUri,
+            folder,
+            folderUrl = string.IsNullOrEmpty(folder) ? null : new Uri(folder).AbsoluteUri,
+            bytesWritten = new FileInfo(fullPath).Length,
+            message = $"Exported .eml to {fullPath}. Open it (double-click, or use the link) to review and send it from Outlook."
+        };
+    }
+
+    // Downloads if it exists (most discoverable for the user), else the temp folder.
+    private static string DefaultExportDir()
+    {
+        var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        return Directory.Exists(downloads) ? downloads : Path.GetTempPath();
+    }
+
+    // Strips characters that are illegal in file names so the subject can seed the file name.
+    private static string SafeFileName(string subject)
+    {
+        var cleaned = new string(subject.Select(c => Array.IndexOf(Path.GetInvalidFileNameChars(), c) >= 0 ? '-' : c).ToArray());
+        return cleaned.Trim().Length == 0 ? "delivery-plan" : cleaned.Trim();
+    }
+
+    // Subject mirrors the SmokeTest e-mail path: PROD plans ship a "Release", busy-season
+    // (QED-only) plans a "QED Deployment"; the month comes from that goal milestone.
+    private static string BuildDraftSubject(DeliveryPlan plan)
+    {
+        var hasRelease = plan.Events.Any(e => e.Label == Milestone.Release);
+        var goalMilestone = hasRelease ? Milestone.Release : Milestone.QedDeploy;
+        var goal = plan.Events.First(e => e.Label == goalMilestone);
+        var monthName = CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(goal.Date.Month);
+        var kind = hasRelease ? "Release" : "QED Deployment";
+        return $"[GFR] Delivery Plan \u2014 {monthName} {kind}";
+    }
+
     /// <summary>
     /// Loads/updates the official company holidays for a given year into the store used by the delivery-plan engine. Overwrites that year's holiday file. Each holiday has an ISO date (yyyy-MM-dd) and a display name.
     /// </summary>
