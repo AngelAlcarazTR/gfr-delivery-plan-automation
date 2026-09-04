@@ -325,6 +325,86 @@ public static class PlanTools
     }
 
     /// <summary>
+    /// Lists the GFR delivery plans known to Azure DevOps as a lightweight inventory (id, name,
+    /// owner, goal date and last-modified), sorted by goal date. Optionally narrows to a single
+    /// year and flags which plan is the 'current' one (the nearest goal on/after asOf). Use it to
+    /// audit the year at a glance or to discover a plan id to feed the other tools; it does NOT
+    /// read markers — use get_current_plan for a single plan's detail.
+    /// </summary>
+    /// <param name="catalog">An IDeliveryPlanCatalog instance to enumerate the plans.</param>
+    /// <param name="filter">Free-text filter matching the plan name or owner. Defaults to "[GFR]".</param>
+    /// <param name="catalog">An IDeliveryPlanCatalog instance to enumerate the plans.</param>
+    /// <param name="ado">The AdoConfig used to build each plan's Delivery Plan deep-link.</param>
+    /// <param name="filter">Free-text filter matching the plan name or owner. Defaults to "[GFR]".</param>
+    /// <param name="year">Optional year to narrow the list to plans whose goal date is in that year.</param>
+    /// <param name="asOf">Optional reference date ISO yyyy-MM-dd used to flag the current plan. Defaults to today.</param>
+    /// <param name="ct">A CancellationToken to observe while waiting for the task to complete.</param>
+    /// <returns>An object with the plan inventory sorted by goal date, and the current plan id.</returns>
+    [McpServerTool, Description(
+        "Lists the GFR delivery plans in Azure DevOps as a lightweight inventory — id, name, " +
+        "owner, goal date and last-modified — sorted by goal date, with undated plans last. " +
+        "Optionally pass 'year' to narrow to a single year's plans, and 'asOf' (today by default) " +
+        "to flag which plan is 'current' (isCurrent=true is the nearest goal on/after asOf; its " +
+        "id is also echoed as currentPlanId). Each plan carries a ready-made markdown link in " +
+        "'view' (e.g. '[View](https://dev.azure.com/.../plan/{id})') plus the raw 'url'. When you " +
+        "present this list to the user, render the plan name followed by the SHORT 'view' link " +
+        "(the word 'View' as a clickable link) — do NOT paste the long raw url. Use this to audit " +
+        "the whole year or to find a plan id to feed get_current_plan, update_plan_marker or " +
+        "auto_resolve_holidays. It does NOT return markers or warnings — call get_current_plan " +
+        "for a single plan's detail.")]
+    public static async Task<object> ListPlans(
+        IDeliveryPlanCatalog catalog,
+        AdoConfig ado,
+        [Description("Free-text filter matching the plan name or owner, e.g. '[GFR]'. Defaults to '[GFR]'.")] string filter = "[GFR]",
+        [Description("Optional year to narrow to plans whose goal date is in that year, e.g. 2026")] int? year = null,
+        [Description("Reference date ISO yyyy-MM-dd used to flag the current plan. Defaults to today.")] string? asOf = null,
+        CancellationToken ct = default)
+    {
+        var today = string.IsNullOrWhiteSpace(asOf)
+            ? LocalDate.FromDateTime(DateTime.Today)
+            : ParseDate(asOf, nameof(asOf));
+
+        var matches = await catalog.FindPlansAsync(filter, ct);
+
+        var scoped = year is { } y
+            ? matches.Where(p => p.GoalDate?.Year == y).ToList()
+            : matches.ToList();
+
+        var current = CurrentPlanSelector.Pick(scoped, today);
+
+        // Dated plans ascending by goal date; undated ones (unparseable name) last.
+        var ordered = scoped
+            .OrderBy(p => p.GoalDate is null)
+            .ThenBy(p => p.GoalDate ?? LocalDate.MaxIsoValue)
+            .Select(p =>
+            {
+                var url = AdoPlanLinks.DeliveryPlanUrl(ado, p.Id);
+                return new
+                {
+                    id = p.Id,
+                    name = p.Name,
+                    owner = p.Owner,
+                    goalDate = p.GoalDate is { } g ? Iso(g) : null,
+                    modifiedAt = InstantPattern.ExtendedIso.Format(p.ModifiedAt),
+                    isCurrent = current is not null && p.Id == current.Id,
+                    url,
+                    view = $"[View]({url})"
+                };
+            })
+            .ToList();
+
+        return new
+        {
+            filter,
+            year,
+            asOf = Iso(today),
+            count = ordered.Count,
+            currentPlanId = current?.Id,
+            plans = ordered
+        };
+    }
+
+    /// <summary>
     /// Moves a single milestone marker of an EXISTING GFR delivery plan in Azure DevOps to a new date,
     /// in place, leaving every other marker and setting untouched. Then re-reads the plan and returns
     /// its markers plus fresh holiday / chronological-order warnings. Typically used to nudge a marker
@@ -422,6 +502,259 @@ public static class PlanTools
             warnings,
             warningsSummary,
             orderWarnings
+        };
+    }
+
+    /// <summary>
+    /// Scans an EXISTING GFR delivery plan in Azure DevOps for markers landing on a public
+    /// holiday (or weekend) and rolls each conflicting marker FORWARD to the nearest business
+    /// day that is clear in every holiday calendar. Preview-first: with dryRun=true (default)
+    /// it only proposes the moves; with dryRun=false it applies them via UpdateMarkerDateAsync,
+    /// re-reads the plan and reports any remaining warnings.
+    /// </summary>
+    /// <param name="reader">An IDeliveryPlanReader instance to read (and re-read) the plan.</param>
+    /// <param name="writer">An IDeliveryPlanWriter instance to persist the moves when applying.</param>
+    /// <param name="holidaySource">An IHolidayCalendarSource instance to detect holiday conflicts.</param>
+    /// <param name="planId">The ADO delivery plan id (GUID) to resolve, e.g. from get_current_plan.</param>
+    /// <param name="dryRun">When true (default) only proposes moves; when false applies them to ADO.</param>
+    /// <param name="ct">A CancellationToken to observe while waiting for the task to complete.</param>
+    /// <returns>An object describing the proposed or applied resolutions and, when applied, the re-read plan.</returns>
+    /// <exception cref="ArgumentException">Thrown when planId is empty.</exception>
+    [McpServerTool, Description(
+        "Auto-resolves holiday conflicts on an EXISTING GFR delivery plan in Azure DevOps: it " +
+        "finds every marker that lands on a public holiday (or weekend) and rolls it FORWARD to " +
+        "the nearest business day that is clear in ALL holiday calendars. Preview-first — with " +
+        "dryRun=true (the default) it ONLY proposes the moves and writes nothing; re-run with " +
+        "dryRun=false to actually apply them. Pass the plan id (planId) from get_current_plan. " +
+        "When applied it moves each marker via the same in-place update as update_plan_marker, " +
+        "then re-reads the plan and returns its markers plus any 'remainingWarnings' (should be " +
+        "empty) and 'orderWarnings' (moving a marker forward can push it out of chronological " +
+        "order — advisory, never blocking). Returns conflictCount=0 when the plan is already clean.")]
+    public static async Task<object> AutoResolveHolidays(
+        IDeliveryPlanReader reader,
+        IDeliveryPlanWriter writer,
+        IHolidayCalendarSource holidaySource,
+        [Description("ADO delivery plan id (GUID) to resolve, e.g. from get_current_plan")] string planId,
+        [Description("Preview only when true (default); apply the moves to ADO when false")] bool dryRun = true,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(planId))
+            throw new ArgumentException("Provide the plan id (planId).");
+
+        var plan = await reader.GetPlanAsync(planId, ct);
+        var calendars = await holidaySource.GetCalendarAsync(MarkerYears(plan), ct);
+        var conflicts = HolidayConflictDetector.Detect(plan.Events, calendars);
+
+        if (conflicts.Count == 0)
+            return new
+            {
+                planId,
+                planName = plan.Sprint.SprintId,
+                dryRun,
+                applied = false,
+                conflictCount = 0,
+                resolutions = Array.Empty<object>(),
+                message = "No holiday conflicts found; nothing to resolve."
+            };
+
+        // One resolution per conflicting marker (a marker can clash in several calendars
+        // on the same day). Roll each forward to a day clear in EVERY calendar.
+        var resolutions = conflicts
+            .GroupBy(c => c.Marker)
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var from = g.First().Date;
+                var to = NextClearBusinessDay(from, calendars);
+                return new
+                {
+                    marker = g.Key,
+                    from,
+                    to,
+                    daysShifted = Period.Between(from, to, PeriodUnits.Days).Days,
+                    holidays = g.Select(c => new
+                    {
+                        country = c.Country,
+                        region = c.Region,
+                        holiday = c.HolidayName
+                    }).ToList()
+                };
+            })
+            .ToList();
+
+        if (dryRun)
+            return new
+            {
+                planId,
+                planName = plan.Sprint.SprintId,
+                dryRun = true,
+                applied = false,
+                conflictCount = resolutions.Count,
+                resolutions = resolutions.Select(r => new
+                {
+                    marker = r.marker.ToString(),
+                    from = Iso(r.from),
+                    to = Iso(r.to),
+                    r.daysShifted,
+                    r.holidays
+                }).ToList(),
+                message = "Preview only — re-run with dryRun=false to apply these moves to ADO."
+            };
+
+        // Apply each move in place. Each update independently re-reads the plan revision,
+        // so sequential writes are safe.
+        var applied = new List<object>();
+        foreach (var r in resolutions)
+        {
+            var result = await writer.UpdateMarkerDateAsync(planId, r.marker, r.to, ct);
+            applied.Add(new
+            {
+                marker = r.marker.ToString(),
+                from = Iso(r.from),
+                to = Iso(r.to),
+                r.daysShifted,
+                found = result.Found,
+                previousDate = result.PreviousDate is { } p ? Iso(p) : null,
+                r.holidays
+            });
+        }
+
+        // Re-read so the caller sees the real, persisted state and fresh warnings.
+        var updated = await reader.GetPlanAsync(planId, ct);
+
+        var markers = updated.Events
+            .OrderBy(e => e.Date)
+            .Select(e => new
+            {
+                label = e.Label.ToString(),
+                date = Iso(e.Date),
+                adjusted = e.Adjusted,
+                originalDate = e.OriginalDate is { } od ? Iso(od) : null
+            })
+            .ToList();
+
+        var remaining = await WarningsFor(updated, holidaySource, ct);
+
+        var remainingWarnings = remaining.Select(c => new
+        {
+            marker = c.Marker.ToString(),
+            date = Iso(c.Date),
+            country = c.Country,
+            region = c.Region,
+            holiday = c.HolidayName
+        }).ToList();
+
+        var warningsSummary = remaining
+            .Select(c => $"{c.Marker} {Iso(c.Date)} falls on a public holiday in {c.Country}-{c.Region}: {c.HolidayName}")
+            .ToList();
+
+        return new
+        {
+            planId,
+            planName = updated.Sprint.SprintId,
+            dryRun = false,
+            applied = true,
+            resolvedCount = applied.Count(a => (bool)((dynamic)a).found),
+            resolutions = applied,
+            markers,
+            remainingWarningsCount = remainingWarnings.Count,
+            remainingWarnings,
+            warningsSummary,
+            orderWarnings = OrderWarnings(updated)
+        };
+    }
+
+    // Rolls forward from a date to the first weekday that is not a holiday in ANY calendar.
+    // Mirrors HolidayCalendar.RollForwardToBusinessDay but across every country/region set.
+    internal static LocalDate NextClearBusinessDay(LocalDate date, IReadOnlyList<CountryHolidays> calendars)
+    {
+        var d = date;
+        while (!IsClearBusinessDay(d, calendars))
+            d = d.PlusDays(1);
+        return d;
+    }
+
+    private static bool IsClearBusinessDay(LocalDate date, IReadOnlyList<CountryHolidays> calendars)
+    {
+        if (date.DayOfWeek is IsoDayOfWeek.Saturday or IsoDayOfWeek.Sunday)
+            return false;
+        foreach (var cal in calendars)
+            if (cal.TryGet(date, out _))
+                return false;
+        return true;
+    }
+
+    [McpServerTool, Description(
+        "Lists the public holidays loaded for a given year, WITHOUT touching any delivery plan. " +
+        "Reads straight from the holiday calendars used by the engine and returns every holiday as " +
+        "{ date, name, country, region }, ordered by date. Optionally filter by country (ISO code " +
+        "like 'MX','US','IN') and/or region/state code. Use it to answer 'which days are holidays in " +
+        "2026?' on its own. Returns count=0 when no holidays are loaded for that year.")]
+    public static async Task<object> ListHolidays(
+        IHolidayCalendarSource holidaySource,
+        [Description("Year to list holidays for, e.g. 2026")] int year,
+        [Description("Optional ISO country code filter, e.g. 'MX','US','IN'. Omit for all countries.")] string? country = null,
+        [Description("Optional region/state code filter, e.g. 'KA','TG'. Omit for all regions.")] string? region = null,
+        CancellationToken ct = default)
+    {
+        var calendars = await holidaySource.GetCalendarAsync([year], ct);
+
+        var holidays = calendars
+            .Where(c => country is null || string.Equals(c.Country, country, StringComparison.OrdinalIgnoreCase))
+            .Where(c => region is null || string.Equals(c.Region, region, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(c => c.Holidays.Select(h => new
+            {
+                date = Iso(h.Date),
+                name = h.Name,
+                country = c.Country,
+                region = c.Region
+            }))
+            .OrderBy(h => h.date, StringComparer.Ordinal)
+            .ThenBy(h => h.country, StringComparer.Ordinal)
+            .ToList();
+
+        return new
+        {
+            year,
+            country,
+            region,
+            count = holidays.Count,
+            holidays
+        };
+    }
+
+    [McpServerTool, Description(
+        "Renders an EXISTING GFR delivery plan to the SAME branded HTML e-mail visual that the " +
+        "Azure Function produces — but in-process, straight from Azure DevOps, so no Function has " +
+        "to be deployed or reachable. Pass the plan id (planId) from get_current_plan or list_plans. " +
+        "Returns { planId, today, contentType:'text/html', length, html } where 'html' is a complete, " +
+        "self-contained document (the progress ring is embedded as a base64 PNG). This is the exact " +
+        "artifact to drop into the monthly draft e-mail. Optionally pass 'today' (ISO yyyy-MM-dd) to " +
+        "compute the 'days to release' countdown as of that date; defaults to today.")]
+    public static async Task<object> GetPlanRender(
+        IDeliveryPlanReader reader,
+        IDeliveryPlanRenderer renderer,
+        [Description("ADO delivery plan id (GUID) to render, e.g. from get_current_plan")] string planId,
+        [Description("Reference date ISO yyyy-MM-dd for the countdown. Defaults to today.")] string? today = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(planId))
+            throw new ArgumentException("Provide the plan id (planId).");
+
+        var asOf = string.IsNullOrWhiteSpace(today)
+            ? LocalDate.FromDateTime(DateTime.Today)
+            : ParseDate(today, nameof(today));
+
+        var plan = await reader.GetPlanAsync(planId, ct);
+        var html = renderer.Render(plan, asOf);
+
+        return new
+        {
+            planId,
+            today = Iso(asOf),
+            contentType = "text/html",
+            length = html.Length,
+            html
         };
     }
 

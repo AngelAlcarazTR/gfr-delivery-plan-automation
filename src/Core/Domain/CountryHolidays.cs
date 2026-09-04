@@ -11,6 +11,11 @@ public sealed class CountryHolidays
     public string? Region { get; } = null;
 
     /// <summary>
+    /// Gets all holidays in this calendar, ordered by date.
+    /// </summary>
+    public IReadOnlyList<Holiday> Holidays { get; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="CountryHolidays"/> class with the specified country, region, and holidays.
     /// </summary>
     /// <param name="country">The country for which the holidays are defined.</param>
@@ -25,6 +30,7 @@ public sealed class CountryHolidays
         foreach (var h in holidays)
             map[h.Date] = h.Name;
         _byDate = map;
+        Holidays = [.. map.Select(kv => new Holiday(kv.Key, kv.Value)).OrderBy(h => h.Date)];
     }
 
     /// <summary>

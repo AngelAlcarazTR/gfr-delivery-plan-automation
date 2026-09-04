@@ -47,6 +47,26 @@ builder.Services.AddTransient<IDeliveryPlanWriter>(sp =>
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
         sp.GetRequiredService<AdoConfig>()));
 
+// Branding + footer links are configuration (same keys as the Functions host).
+// Leave Email__DashboardUrl / Email__TicketStatusUrl unset to get per-release
+// deep-links built from the plan's own id/tags.
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    return new EmailBranding(
+        SenderName: cfg["Email:SenderName"] ?? EmailBranding.Default.SenderName,
+        SenderTitle: cfg["Email:SenderTitle"] ?? EmailBranding.Default.SenderTitle,
+        DashboardUrl: cfg["Email:DashboardUrl"] ?? "",
+        TicketStatusUrl: cfg["Email:TicketStatusUrl"] ?? "");
+});
+
+// Same renderer the Azure Function uses, so get_plan_render returns identical HTML
+// in-process (no HTTP hop, no dependency on the Function being deployed/reachable).
+builder.Services.AddTransient<IDeliveryPlanRenderer>(sp =>
+    new HtmlEmailRenderer(
+        sp.GetRequiredService<EmailBranding>(),
+        sp.GetRequiredService<AdoConfig>()));
+
 var app = builder.Build();
 
 app.MapMcp();
